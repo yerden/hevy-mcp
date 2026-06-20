@@ -53,7 +53,7 @@ func (fs *fakeServer) client() *Client {
 }
 
 func TestClient_SendsAPIKeyHeader(t *testing.T) {
-	fs := newFakeServer(t, 200, `{"id":"u1","name":"alice","url":"https://hevy.com/alice"}`)
+	fs := newFakeServer(t, 200, `{"data":{"id":"u1","name":"alice","url":"https://hevy.com/alice"}}`)
 	c := fs.client()
 
 	_, err := c.GetUserInfo()
@@ -63,11 +63,21 @@ func TestClient_SendsAPIKeyHeader(t *testing.T) {
 	assert.Equal(t, "GET", fs.lastMethod)
 }
 
-func TestClient_GetUserInfo(t *testing.T) {
-	fs := newFakeServer(t, 200, `{"id":"u1","name":"alice","url":"https://hevy.com/alice"}`)
+// Hevy returns user info wrapped under `data` per its OpenAPI spec.
+func TestClient_GetUserInfo_UnwrapsDataEnvelope(t *testing.T) {
+	fs := newFakeServer(t, 200, `{"data":{"id":"u1","name":"alice","url":"https://hevy.com/alice"}}`)
 	got, err := fs.client().GetUserInfo()
 	require.NoError(t, err)
 	assert.Equal(t, &UserInfo{ID: "u1", Name: "alice", URL: "https://hevy.com/alice"}, got)
+}
+
+// Defensive: if Hevy ever returns the bare object, still decode it.
+func TestClient_GetUserInfo_BareResponseStillWorks(t *testing.T) {
+	fs := newFakeServer(t, 200, `{"id":"u1","name":"alice","url":"https://hevy.com/alice"}`)
+	got, err := fs.client().GetUserInfo()
+	require.NoError(t, err)
+	assert.Equal(t, "u1", got.ID)
+	assert.Equal(t, "alice", got.Name)
 }
 
 func TestClient_APIError401(t *testing.T) {

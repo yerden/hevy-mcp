@@ -206,7 +206,9 @@ func (c *Client) UpdateBodyMeasurement(date string, m *BodyMeasurement) error {
 
 func (c *Client) GetUserInfo() (*UserInfo, error) {
 	out := &UserInfo{}
-	if err := c.do("GET", "/v1/user/info", nil, nil, out); err != nil {
+	// Hevy wraps the user info response under `data`:
+	// `{"data": {"id":..., "name":..., "url":...}}`
+	if err := c.doUnwrap("GET", "/v1/user/info", nil, nil, "data", out); err != nil {
 		return nil, err
 	}
 	return out, nil

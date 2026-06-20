@@ -125,7 +125,7 @@ func TestTools_ListWorkoutsDefaults(t *testing.T) {
 
 func TestTools_GetUserInfo(t *testing.T) {
 	u := newUpstream(t)
-	u.reply(200, `{"id":"u1","name":"alice","url":"https://hevy.com/alice"}`)
+	u.reply(200, `{"data":{"id":"u1","name":"alice","url":"https://hevy.com/alice"}}`)
 
 	r := u.callTool("hevy_get_user_info", nil)
 	assert.False(t, r.IsError)

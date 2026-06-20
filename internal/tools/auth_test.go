@@ -76,7 +76,7 @@ func TestEndToEnd_PerSessionAPIKey(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seenKey = r.Header.Get("api-key")
 		w.WriteHeader(200)
-		_, _ = io.WriteString(w, `{"id":"u","name":"x","url":"y"}`)
+		_, _ = io.WriteString(w, `{"data":{"id":"u","name":"x","url":"y"}}`)
 	}))
 	t.Cleanup(up.Close)
 

@@ -45,6 +45,15 @@ Go's `omitempty` treats the zero value as "empty". If a Hevy field is boolean an
 
 Same logic for any numeric field where `0` might be a real value, but in practice all Hevy numeric fields already use `*int` / `*float64`. Pinned by `TestTools_CreateWorkout_IsPrivateFalseSurvives` and friends.
 
+### Some GET responses are wrapped under a key
+
+Not just POSTs — some GETs wrap too. Known ones:
+
+- `GET /v1/user/info` → `{"data": {...UserInfo}}`
+- `GET /v1/routines/{id}` → `{"routine": {...}}`
+
+When adding a new typed GET, default to `doUnwrap(method, path, query, body, key, out)` rather than `do`. It tries the envelope first and falls back to bare, so future shape changes don't silently zero out the result.
+
 ### POST/PUT responses are inconsistent — return raw bytes
 
 Hevy's OpenAPI spec says POST endpoints return the created object, but in practice some return wrapped envelopes (`{"routine": {...}}`), some return empty bodies, and the shape varies by endpoint. Decoding into a typed struct lost data silently.
