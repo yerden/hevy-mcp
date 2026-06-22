@@ -68,16 +68,17 @@ type UpdateRoutineRequest struct {
 // WorkoutPayload is the workout sub-object for both POST and PUT (Hevy uses
 // the same schema for create and update).
 //
-// IsPrivate is *bool, not bool, because `omitempty` on a plain bool would
-// drop a deliberate `false` (it can't distinguish "user wants public" from
-// "user didn't specify"). With *bool: nil → field omitted, &false → "false"
-// sent, &true → "true" sent.
+// IsPrivate is a plain bool with no `omitempty`: Hevy rejects the request
+// with `"workout.is_private" is required` if the field is missing, so we
+// always serialize it. Default zero value `false` means public, which
+// matches Hevy's app default. Callers that want a private workout must set
+// it to true explicitly.
 type WorkoutPayload struct {
 	Title       string                   `json:"title"`
 	Description string                   `json:"description,omitempty"`
 	StartTime   string                   `json:"start_time"`
 	EndTime     string                   `json:"end_time"`
-	IsPrivate   *bool                    `json:"is_private,omitempty"`
+	IsPrivate   bool                     `json:"is_private"`
 	Exercises   []WorkoutPayloadExercise `json:"exercises"`
 }
 

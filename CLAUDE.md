@@ -38,12 +38,14 @@ Response types live in `internal/hevy/models.go`. Request types live in `interna
 
 ### `omitempty` on plain `bool` drops `false`
 
-Go's `omitempty` treats the zero value as "empty". If a Hevy field is boolean and the user can deliberately want `false` (e.g. `is_private`), use `*bool` with `omitempty`:
+Go's `omitempty` treats the zero value as "empty". If a Hevy field is boolean and the user can deliberately want `false`, use `*bool` with `omitempty`:
 - `nil` → field omitted (Hevy uses its default)
-- `&false` → `"is_private":false` sent
-- `&true` → `"is_private":true` sent
+- `&false` → `"foo":false` sent
+- `&true` → `"foo":true` sent
 
-Same logic for any numeric field where `0` might be a real value, but in practice all Hevy numeric fields already use `*int` / `*float64`. Pinned by `TestTools_CreateWorkout_IsPrivateFalseSurvives` and friends.
+Same logic for any numeric field where `0` might be a real value, but in practice all Hevy numeric fields already use `*int` / `*float64`.
+
+**Exception: `workout.is_private` must always be sent.** Hevy rejects the request with `"workout.is_private" is required` if the field is missing — so `WorkoutPayload.IsPrivate` is a plain `bool` with no `omitempty`. Default zero value is `false` (public), matching the Hevy app default. Pinned by `TestTools_CreateWorkout_IsPrivateDefaultsToFalseWhenUnset` plus the `IsPrivateFalseSurvives` / `IsPrivateTrueSurvives` pair.
 
 ### Some GET responses are wrapped under a key
 

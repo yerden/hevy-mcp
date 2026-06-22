@@ -237,9 +237,10 @@ func TestTools_CreateWorkout_IsPrivateTrueSurvives(t *testing.T) {
 	assert.Contains(t, string(u.lastBody), `"is_private":true`)
 }
 
-// When the LLM omits is_private entirely, the body should also omit it (so
-// Hevy uses its default rather than us picking one).
-func TestTools_CreateWorkout_IsPrivateAbsentWhenUnset(t *testing.T) {
+// Hevy rejects create/update with `"workout.is_private" is required` if the
+// field is missing, so it must always be serialized. When the caller omits
+// it, we send the zero value (false = public), matching Hevy's app default.
+func TestTools_CreateWorkout_IsPrivateDefaultsToFalseWhenUnset(t *testing.T) {
 	u := newUpstream(t)
 	u.reply(201, ``)
 
@@ -253,7 +254,14 @@ func TestTools_CreateWorkout_IsPrivateAbsentWhenUnset(t *testing.T) {
 	}
 	r := u.callTool("hevy_create_workout", args)
 	assert.False(t, r.IsError)
-	assert.NotContains(t, string(u.lastBody), `"is_private"`, "must omit is_private when caller didn't set it; body=%s", string(u.lastBody))
+
+	var sent struct {
+		Workout map[string]any `json:"workout"`
+	}
+	require.NoError(t, json.Unmarshal(u.lastBody, &sent))
+	v, present := sent.Workout["is_private"]
+	require.True(t, present, "is_private must always be present in the body; body=%s", string(u.lastBody))
+	assert.Equal(t, false, v, "is_private must default to false when caller omits it")
 }
 
 func TestTools_UpdateWorkout(t *testing.T) {
