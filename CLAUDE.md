@@ -10,7 +10,7 @@ Notes for an AI agent (Claude or otherwise) working on this codebase. The user-f
 
 ## Architecture in one paragraph
 
-`cmd/hevy-mcp/main.go` reads env (`HEVY_API_KEY`, `HEVY_BASE_URL`, `MCP_TRANSPORT`, `MCP_PORT`), builds a `*hevy.Client`, wraps it in a `tools.ClientFactory`, registers tools on an `mcp-go` server, then starts stdio or streamable HTTP. The factory pattern is the key seam: stdio uses a static factory (one key for the whole process); HTTP uses `tools.HeaderFactory` which pulls a per-request `X-Hevy-Api-Key` header out of context (set by `tools.HTTPHeaderInjector` via `server.WithHTTPContextFunc`). That makes the same binary usable as either a single-tenant subprocess or a multi-tenant HTTP daemon.
+`cmd/hevy-mcp/main.go` reads `HEVY_API_KEY` from env (the only secret), parses CLI flags (`--transport`, `--port`, `--base-url`), builds a `*hevy.Client`, wraps it in a `tools.ClientFactory`, registers tools on an `mcp-go` server, then starts stdio or streamable HTTP. The factory pattern is the key seam: stdio uses a static factory (one key for the whole process); HTTP uses `tools.HeaderFactory` which pulls a per-request `X-Hevy-Api-Key` header out of context (set by `tools.HTTPHeaderInjector` via `server.WithHTTPContextFunc`). That makes the same binary usable as either a single-tenant subprocess or a multi-tenant HTTP daemon.
 
 ## Hevy API quirks (HARD-WON)
 

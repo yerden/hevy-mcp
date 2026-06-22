@@ -16,11 +16,9 @@ services:
     image: hevy-mcp:latest
     environment:
       - HEVY_API_KEY=${HEVY_API_KEY:-}
-      - HEVY_BASE_URL=${HEVY_BASE_URL:-}
-      - MCP_TRANSPORT=${MCP_TRANSPORT:-stdio}
-      - MCP_PORT=${MCP_PORT:-8080}
+    command: ["--transport=http", "--port=8080"]
     ports:
-      - "${MCP_PORT:-8080}:${MCP_PORT:-8080}"
+      - "8080:8080"
     stdin_open: true
     tty: true
 

@@ -8,12 +8,21 @@
 //     X-Hevy-Api-Key request header, so one running server can be shared by
 //     multiple Hevy accounts. HEVY_API_KEY remains a usable fallback if the
 //     header is absent.
+//
+// Runtime options (non-secret) are passed as CLI flags:
+//
+//	--transport stdio|http   transport selection (default stdio)
+//	--port 8080              HTTP listen port (only used when --transport=http)
+//	--base-url URL           override Hevy API base URL (testing only)
 package main
 
 import (
+	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/mark3labs/mcp-go/server"
 
@@ -27,19 +36,29 @@ const (
 )
 
 func main() {
+	var (
+		transport = flag.String("transport", "stdio", "transport: stdio or http")
+		port      = flag.Int("port", 8080, "HTTP listen port (only used with --transport=http)")
+		baseURL   = flag.String("base-url", "", "override Hevy API base URL (testing only)")
+	)
+	flag.Parse()
+
+	if *transport != "stdio" && *transport != "http" {
+		fmt.Fprintf(os.Stderr, "invalid --transport %q: must be stdio or http\n", *transport)
+		os.Exit(2)
+	}
+
 	envKey := os.Getenv("HEVY_API_KEY")
-	baseURL := os.Getenv("HEVY_BASE_URL")
-	transport := os.Getenv("MCP_TRANSPORT")
 
 	// stdio mode requires the env key — there's nowhere else to get it from.
-	if transport != "http" && envKey == "" {
+	if *transport == "stdio" && envKey == "" {
 		log.Fatal("HEVY_API_KEY environment variable is required for stdio transport")
 	}
 
 	// Base client; the API key on this instance is just a placeholder — the
 	// factory swaps it per call via WithAPIKey so the shared *http.Client (and
 	// its connection pool) is reused.
-	base := hevy.New(envKey, baseURL)
+	base := hevy.New(envKey, *baseURL)
 	factory := tools.HeaderFactory(base, envKey)
 
 	s := server.NewMCPServer(serverName, serverVersion,
@@ -48,13 +67,9 @@ func main() {
 	)
 	tools.RegisterAll(s, factory)
 
-	switch transport {
+	switch *transport {
 	case "http":
-		port := os.Getenv("MCP_PORT")
-		if port == "" {
-			port = "8080"
-		}
-		addr := ":" + port
+		addr := ":" + strconv.Itoa(*port)
 		h := server.NewStreamableHTTPServer(s,
 			server.WithHTTPContextFunc(tools.HTTPHeaderInjector()),
 		)

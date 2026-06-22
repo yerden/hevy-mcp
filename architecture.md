@@ -21,7 +21,7 @@ Authentication: the binary reads `HEVY_API_KEY` from the environment and forward
 hevy-mcp/
 ├── cmd/
 │   └── hevy-mcp/
-│       └── main.go           # wires everything, reads env, starts chosen transport
+│       └── main.go           # wires everything, parses flags, starts chosen transport
 ├── internal/
 │   ├── hevy/
 │   │   ├── client.go         # HTTP client (base URL, api-key header, error handling)
@@ -41,7 +41,7 @@ hevy-mcp/
 ## Component Responsibilities
 
 ### `cmd/hevy-mcp/main.go`
-Reads `HEVY_API_KEY` (and optional `HEVY_BASE_URL`), constructs a `hevy.Client`, builds the `mcp-go` server via `tools.RegisterAll`, then starts either transport based on the `MCP_TRANSPORT` env var (`stdio` default, or `http` for HTTP/SSE on `MCP_PORT`).
+Reads `HEVY_API_KEY` from the environment (the only secret), parses CLI flags (`--transport`, `--port`, `--base-url`), constructs a `hevy.Client`, builds the `mcp-go` server via `tools.RegisterAll`, then starts either transport based on `--transport` (`stdio` default, or `http` for HTTP/SSE on `--port`).
 
 ### `internal/hevy/`
 
@@ -162,12 +162,12 @@ stdout ← [JSON-RPC response]
 
 ### Transports
 
-Both are operational; selected at startup via `MCP_TRANSPORT`:
+Both are operational; selected at startup via `--transport`:
 
-| `MCP_TRANSPORT` | How it starts | Use case |
-|-----------------|--------------|----------|
+| `--transport` | How it starts | Use case |
+|---|---|---|
 | `stdio` (default) | `server.ServeStdio(s)` | Claude Desktop / subprocess mode |
-| `http` | `server.NewStreamableHTTPServer(s)` on `MCP_PORT` (default `8080`) | Daemon / multi-client mode via HTTP+SSE |
+| `http` | `server.NewStreamableHTTPServer(s)` on `--port` (default `8080`) | Daemon / multi-client mode via HTTP+SSE |
 
 ---
 

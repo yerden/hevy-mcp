@@ -16,15 +16,15 @@ docker run --rm -i -e HEVY_API_KEY=pk_... hevy-mcp
 
 # HTTP mode (for HTTP MCP clients / multi-user):
 docker run --rm -p 8080:8080 \
-  -e MCP_TRANSPORT=http \
   -e HEVY_API_KEY=pk_... \
-  hevy-mcp
+  hevy-mcp --transport=http
 ```
 
 You can also build natively if you have Go 1.25+:
 ```bash
 go build -o hevy-mcp ./cmd/hevy-mcp
-HEVY_API_KEY=pk_... ./hevy-mcp
+HEVY_API_KEY=pk_... ./hevy-mcp                       # stdio
+HEVY_API_KEY=pk_... ./hevy-mcp --transport=http      # HTTP on :8080
 ```
 
 ### Configure your MCP client
@@ -63,12 +63,21 @@ Or stdio mode:
 
 ## Configuration
 
-| Variable | Default | Notes |
+The API key is the only secret and stays in the environment. Everything else is a CLI flag.
+
+**Environment variable:**
+
+| Variable | Notes |
+|---|---|
+| `HEVY_API_KEY` | Required for stdio; fallback for HTTP (per-request `X-Hevy-Api-Key` header takes precedence). Get one from your Hevy account settings. |
+
+**Flags** (`hevy-mcp --help`):
+
+| Flag | Default | Notes |
 |---|---|---|
-| `HEVY_API_KEY` | (required for stdio; fallback for HTTP) | Get one from your Hevy account settings. |
-| `HEVY_BASE_URL` | `https://api.hevyapp.com` | Override only for testing. |
-| `MCP_TRANSPORT` | `stdio` | Set to `http` for HTTP streamable transport. |
-| `MCP_PORT` | `8080` | HTTP listen port. |
+| `--transport` | `stdio` | `stdio` or `http`. |
+| `--port` | `8080` | HTTP listen port (only used with `--transport=http`). |
+| `--base-url` | `https://api.hevyapp.com` | Override only for testing. |
 
 ### Authentication modes
 
@@ -104,7 +113,7 @@ This mounts the source tree into `golang:1.25-alpine` and runs `go test ./...`. 
 ## Layout
 
 ```
-cmd/hevy-mcp/          binary entry point (env, transport selection)
+cmd/hevy-mcp/          binary entry point (flag parsing, transport selection)
 internal/hevy/         REST client, request/response types
 internal/tools/        MCP tool registration, per-session auth
 Dockerfile             multi-stage build → ~17 MB image
