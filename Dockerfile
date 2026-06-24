@@ -16,4 +16,4 @@ COPY --from=builder /out/hevy-mcp /usr/local/bin/hevy-mcp
 
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/hevy-mcp"]
+ENTRYPOINT ["/usr/local/bin/hevy-mcp", "--transport", "http"]
