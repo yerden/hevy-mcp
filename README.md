@@ -55,7 +55,7 @@ fly deploy
 ### Connect from Claude (web, desktop, mobile)
 
 1. In Claude → Settings → Connectors → **Add custom connector**.
-2. URL: `https://your-host.example` (the issuer URL from above).
+2. URL: `https://your-host.example/mcp` — the MCP endpoint path is `/mcp`, and Claude treats whatever URL you paste here as the canonical resource. The `/mcp` suffix is required.
 3. **Advanced settings → OAuth Client ID**: enter any non-empty value, e.g. `hevy-mcp`. Leave Client Secret blank.
 4. Click Connect. Claude redirects to the server's consent page.
 5. Paste your Hevy API key (find it in the Hevy app → Settings → Developer).

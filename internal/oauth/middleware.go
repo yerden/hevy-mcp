@@ -13,7 +13,9 @@ import (
 // per RFC 9728 §5.1 / MCP spec, so the client knows where to discover the
 // authorization server.
 func (c *Config) newBearerMiddleware(resourceURL string, next http.Handler) http.Handler {
-	resourceMetadataURL := strings.TrimRight(resourceURL, "/") + pathProtectedResourceMeta
+	// The metadata document lives at the host-root well-known path, not
+	// rooted at the resource (which may include a /mcp path component).
+	resourceMetadataURL := strings.TrimRight(c.Issuer, "/") + pathProtectedResourceMeta
 	wwwAuth := `Bearer resource_metadata="` + resourceMetadataURL + `"`
 
 	unauthorized := func(w http.ResponseWriter, errCode string) {

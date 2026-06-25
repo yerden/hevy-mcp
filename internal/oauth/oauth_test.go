@@ -25,6 +25,7 @@ var (
 	testSigning    = []byte("0123456789abcdef0123456789abcdef")
 	testEncryption = []byte("ABCDEFGHIJKLMNOPQRSTUVWXYZ012345")
 	testIssuer     = "https://hevy.test"
+	testResource   = "https://hevy.test/mcp" // canonical MCP endpoint URL
 )
 
 func newTestConfig(t *testing.T, validator HevyKeyValidator) *Config {
@@ -134,7 +135,7 @@ func TestAuthorize_GET_RendersForm(t *testing.T) {
 	params := authorizeQuery(t, "challenge")
 	req := httptest.NewRequest("GET", pathAuthorize+"?"+params.Encode(), nil)
 	rr := httptest.NewRecorder()
-	cfg.newAuthorizeHandler(testIssuer).ServeHTTP(rr, req)
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr, req)
 	require.Equal(t, http.StatusOK, rr.Code)
 	body := rr.Body.String()
 	assert.Contains(t, body, "Hevy API key")
@@ -147,7 +148,7 @@ func TestAuthorize_GET_RejectsBadRedirect(t *testing.T) {
 	params.Set("redirect_uri", "https://attacker.example/callback")
 	req := httptest.NewRequest("GET", pathAuthorize+"?"+params.Encode(), nil)
 	rr := httptest.NewRecorder()
-	cfg.newAuthorizeHandler(testIssuer).ServeHTTP(rr, req)
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
@@ -157,7 +158,7 @@ func TestAuthorize_GET_RejectsPlainPKCE(t *testing.T) {
 	params.Set("code_challenge_method", "plain")
 	req := httptest.NewRequest("GET", pathAuthorize+"?"+params.Encode(), nil)
 	rr := httptest.NewRecorder()
-	cfg.newAuthorizeHandler(testIssuer).ServeHTTP(rr, req)
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
@@ -179,7 +180,7 @@ func TestAuthorize_POST_HappyPath_AndTokenExchange(t *testing.T) {
 	req := httptest.NewRequest("POST", pathAuthorize, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	cfg.newAuthorizeHandler(testIssuer).ServeHTTP(rr, req)
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr, req)
 	require.Equal(t, http.StatusFound, rr.Code, "expected redirect; body: %s", rr.Body.String())
 
 	loc, err := url.Parse(rr.Header().Get("Location"))
@@ -198,7 +199,7 @@ func TestAuthorize_POST_HappyPath_AndTokenExchange(t *testing.T) {
 	tokReq := httptest.NewRequest("POST", pathToken, strings.NewReader(tokForm.Encode()))
 	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokRR := httptest.NewRecorder()
-	cfg.newTokenHandler(testIssuer).ServeHTTP(tokRR, tokReq)
+	cfg.newTokenHandler(testResource).ServeHTTP(tokRR, tokReq)
 	require.Equal(t, http.StatusOK, tokRR.Code, "body: %s", tokRR.Body.String())
 
 	var resp map[string]any
@@ -221,7 +222,7 @@ func TestAuthorize_POST_HappyPath_AndTokenExchange(t *testing.T) {
 	mwReq := httptest.NewRequest("POST", "/mcp", nil)
 	mwReq.Header.Set("Authorization", "Bearer "+access)
 	mwRR := httptest.NewRecorder()
-	cfg.newBearerMiddleware(testIssuer, next).ServeHTTP(mwRR, mwReq)
+	cfg.newBearerMiddleware(testResource,next).ServeHTTP(mwRR, mwReq)
 	require.Equal(t, 204, mwRR.Code, "body: %s", mwRR.Body.String())
 	assert.Equal(t, "hk_real", seen)
 }
@@ -233,7 +234,7 @@ func TestAuthorize_POST_BadKey_ReshowsForm(t *testing.T) {
 	req := httptest.NewRequest("POST", pathAuthorize, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	cfg.newAuthorizeHandler(testIssuer).ServeHTTP(rr, req)
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr, req)
 	// We reshow the form on bad keys (user error, not a client bug).
 	require.Equal(t, http.StatusOK, rr.Code)
 	assert.Contains(t, rr.Body.String(), "Hevy rejected")
@@ -250,7 +251,7 @@ func TestToken_BadPKCE(t *testing.T) {
 	req := httptest.NewRequest("POST", pathAuthorize, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
-	cfg.newAuthorizeHandler(testIssuer).ServeHTTP(rr, req)
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr, req)
 	require.Equal(t, http.StatusFound, rr.Code)
 	loc, _ := url.Parse(rr.Header().Get("Location"))
 	code := loc.Query().Get("code")
@@ -264,7 +265,7 @@ func TestToken_BadPKCE(t *testing.T) {
 	tokReq := httptest.NewRequest("POST", pathToken, strings.NewReader(tokForm.Encode()))
 	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokRR := httptest.NewRecorder()
-	cfg.newTokenHandler(testIssuer).ServeHTTP(tokRR, tokReq)
+	cfg.newTokenHandler(testResource).ServeHTTP(tokRR, tokReq)
 	assert.Equal(t, http.StatusBadRequest, tokRR.Code)
 	body, _ := io.ReadAll(tokRR.Body)
 	assert.Contains(t, string(body), "invalid_grant")
@@ -277,7 +278,7 @@ func TestBearerMiddleware_MissingAuth_401WithWWWAuthenticate(t *testing.T) {
 	})
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	rr := httptest.NewRecorder()
-	cfg.newBearerMiddleware(testIssuer, next).ServeHTTP(rr, req)
+	cfg.newBearerMiddleware(testResource,next).ServeHTTP(rr, req)
 	require.Equal(t, http.StatusUnauthorized, rr.Code)
 	wa := rr.Header().Get("WWW-Authenticate")
 	assert.Contains(t, wa, "Bearer")
@@ -296,7 +297,7 @@ func TestBearerMiddleware_AudienceMismatch(t *testing.T) {
 	req := httptest.NewRequest("POST", "/mcp", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rr := httptest.NewRecorder()
-	cfg.newBearerMiddleware(testIssuer, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg.newBearerMiddleware(testResource,http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("aud-mismatched token should not pass")
 	})).ServeHTTP(rr, req)
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
@@ -315,7 +316,7 @@ func authorizeQuery(t *testing.T, challenge string) url.Values {
 	v.Set("state", "xyz-state")
 	v.Set("code_challenge", challenge)
 	v.Set("code_challenge_method", "S256")
-	v.Set("resource", testIssuer)
+	v.Set("resource", testResource)
 	return v
 }
 

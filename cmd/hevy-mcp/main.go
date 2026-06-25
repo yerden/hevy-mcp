@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
 
@@ -114,13 +115,18 @@ func runHTTP(port int, baseURL, issuer string) {
 		},
 	}
 
+	// Canonical resource URL per RFC 8707: the most specific URI the client
+	// uses, which is the MCP endpoint itself (issuer + /mcp). This is what
+	// Claude sends in the `resource` parameter and the `aud` claim.
+	resourceURL := strings.TrimRight(issuer, "/") + mcpPath
+
 	mcpSrv := newMCPServer(tools.ContextFactory(base))
 	mcpHTTP := server.NewStreamableHTTPServer(mcpSrv)
-	guarded := cfg.BearerMiddleware(issuer, mcpHTTP)
+	guarded := cfg.BearerMiddleware(resourceURL, mcpHTTP)
 
 	mux := http.NewServeMux()
 	mux.Handle(mcpPath, guarded)
-	if err := cfg.Install(mux, issuer); err != nil {
+	if err := cfg.Install(mux, resourceURL); err != nil {
 		log.Fatal(err)
 	}
 
