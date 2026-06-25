@@ -3,17 +3,15 @@ package tools
 import (
 	"context"
 	"errors"
-	"net/http"
 
 	"github.com/yerden/hevy-mcp/internal/hevy"
 )
 
-// APIKeyHeader is the HTTP header carrying a per-session Hevy API key.
-const APIKeyHeader = "X-Hevy-Api-Key"
-
 type apiKeyCtxKey struct{}
 
-// WithAPIKey stashes a Hevy API key in ctx.
+// WithAPIKey stashes a Hevy API key in ctx. In HTTP mode the OAuth bearer
+// middleware sets this from the validated access token; in stdio mode it is
+// never used (the static factory holds the key directly).
 func WithAPIKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, apiKeyCtxKey{}, key)
 }
@@ -24,32 +22,19 @@ func APIKeyFromContext(ctx context.Context) (string, bool) {
 	return v, ok && v != ""
 }
 
-// HTTPHeaderInjector returns a function suitable for
-// server.WithHTTPContextFunc that copies APIKeyHeader from each incoming
-// request into ctx.
-func HTTPHeaderInjector() func(ctx context.Context, r *http.Request) context.Context {
-	return func(ctx context.Context, r *http.Request) context.Context {
-		if key := r.Header.Get(APIKeyHeader); key != "" {
-			ctx = WithAPIKey(ctx, key)
-		}
-		return ctx
-	}
-}
-
-// HeaderFactory builds a ClientFactory that resolves the API key per request:
-//   - First, look in the context (set by HTTPHeaderInjector).
-//   - If absent, fall back to fallbackKey (typically the HEVY_API_KEY env var).
-//   - If still empty, return an error so the tool call surfaces a clear message.
+// ContextFactory builds a ClientFactory that reads the per-request Hevy API
+// key out of context. It is the HTTP-mode counterpart to StaticFactory:
+// every tool call expects the bearer middleware to have run first. Calls
+// without a key in context fail with a clear error so the model surfaces a
+// useful message rather than a transport error.
 //
-// base is reused (shared http.Client / base URL) — only the API key varies.
-func HeaderFactory(base *hevy.Client, fallbackKey string) ClientFactory {
+// base is reused — only the API key varies per request.
+func ContextFactory(base *hevy.Client) ClientFactory {
 	return func(ctx context.Context) (*hevy.Client, error) {
-		if key, ok := APIKeyFromContext(ctx); ok {
-			return base.WithAPIKey(key), nil
+		key, ok := APIKeyFromContext(ctx)
+		if !ok {
+			return nil, errors.New("no Hevy API key in request context; OAuth bearer middleware must run first")
 		}
-		if fallbackKey != "" {
-			return base.WithAPIKey(fallbackKey), nil
-		}
-		return nil, errors.New("no Hevy API key: supply " + APIKeyHeader + " request header or set HEVY_API_KEY")
+		return base.WithAPIKey(key), nil
 	}
 }

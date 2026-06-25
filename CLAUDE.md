@@ -81,9 +81,21 @@ The spec says integer; real catalog uses hex strings like `"05293BCA"`. `flexibl
 
 ## Authentication
 
-- Stdio mode: `HEVY_API_KEY` env var, required at startup. One key for the process lifetime.
-- HTTP mode: each request can carry `X-Hevy-Api-Key`. `HEVY_API_KEY` is a fallback. The factory pattern (`tools.ClientFactory`) resolves the key per call.
-- `Client.WithAPIKey(key)` returns a shallow copy that shares the underlying `*http.Client` (and its connection pool). Use it when cloning per-session clients.
+Two distinct auth paths, one per transport. There is no `X-Hevy-Api-Key` header anymore; it was removed in the OAuth cutover.
+
+- **Stdio mode**: `HEVY_API_KEY` env var, required at startup. One key for the process lifetime. Tools are wired via `tools.StaticFactory(client)`.
+- **HTTP mode**: OAuth 2.1 per the MCP authorization spec. Users paste their Hevy API key on the `/oauth/authorize` consent page; the server returns an access token wrapping the key in a signed (HS256) + encrypted (AES-256-GCM) JWT. Claude presents that token as `Authorization: Bearer ...` on every MCP request. Tools are wired via `tools.ContextFactory(base)`, which reads the per-request key from context populated by `oauth.Config.BearerMiddleware`.
+- Required HTTP-mode env vars: `OAUTH_SIGNING_KEY` (base64-encoded 32 bytes for HMAC-256) and `OAUTH_ENCRYPTION_KEY` (base64-encoded 32 bytes for AES-256-GCM). Required HTTP-mode flag: `--issuer` (the canonical https URL of the deployment, e.g. `https://hevy.fly.dev`).
+- `Client.WithAPIKey(key)` returns a shallow copy that shares the underlying `*http.Client` (and its connection pool). Used by `ContextFactory` to clone the base per request.
+
+### OAuth design quirks worth knowing
+
+- **`mcp-go`'s `WithProtectedResourceMetadata` does not enforce bearer tokens.** It only serves the metadata document. We implement bearer validation + WWW-Authenticate emission ourselves in `internal/oauth/middleware.go`. Don't add `WithProtectedResourceMetadata` to the streamable server — we mount `NewProtectedResourceMetadataHandler` directly on our own mux instead, since the library's auto-mux path doesn't compose with our extra OAuth endpoints.
+- **The protected-resource metadata MUST list `authorization_servers` and `bearer_methods_supported`.** Both fields use `omitempty` in the library config, so a Config with empty defaults serves a non-conformant document. Always populate them.
+- **PKCE S256 is required.** `code_challenge_method=plain` is rejected at `/oauth/authorize`.
+- **Single allowed redirect_uri.** Hardcoded to `https://claude.ai/api/mcp/auth_callback` (Claude web's hosted callback). Any other redirect_uri is rejected before any user interaction.
+- **No DCR.** Claude web's "Advanced settings" lets users enter a static client_id. Since this is a public client with PKCE, we don't even validate the client_id — anything non-empty works.
+- **Resource indicator (RFC 8707) is required and audience-bound.** The authorize/token endpoints require `resource` to match the issuer; bearer middleware rejects tokens whose `aud` claim doesn't match the canonical resource URL.
 
 ## Testing patterns
 

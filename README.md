@@ -2,53 +2,69 @@
 
 A Model Context Protocol server that fronts the [Hevy](https://www.hevyapp.com/) workout-tracking REST API. Lets an AI assistant (Claude, etc.) read your workouts, manage routines, log measurements, and so on through MCP tools.
 
-Written in Go. Single binary. Two transports: stdio (subprocess mode) and streamable HTTP (daemon mode, multi-user).
+Written in Go. Single binary. Two transports: stdio (subprocess mode, single-user) and streamable HTTP with OAuth (daemon mode, multi-user).
 
 ## Quick start
 
-### Run locally with Docker
+### Stdio mode (local subprocess, single user)
 
 ```bash
 docker build -t hevy-mcp .
-
-# stdio mode (for Claude Desktop / subprocess clients):
 docker run --rm -i -e HEVY_API_KEY=pk_... hevy-mcp
-
-# HTTP mode (for HTTP MCP clients / multi-user):
-docker run --rm -p 8080:8080 \
-  -e HEVY_API_KEY=pk_... \
-  hevy-mcp --transport=http
 ```
 
-You can also build natively if you have Go 1.25+:
+Or natively (Go 1.25+):
+
 ```bash
 go build -o hevy-mcp ./cmd/hevy-mcp
-HEVY_API_KEY=pk_... ./hevy-mcp                       # stdio
-HEVY_API_KEY=pk_... ./hevy-mcp --transport=http      # HTTP on :8080
+HEVY_API_KEY=pk_... ./hevy-mcp
 ```
 
-### Configure your MCP client
+### HTTP mode (remote, multi-user, OAuth)
 
-**Claude Code (CLI):**
+HTTP mode authenticates each user through the MCP OAuth 2.1 flow. The server hosts a consent page where the user pastes their Hevy API key; the server returns a bearer token that wraps the key (signed HMAC-SHA256, encrypted AES-256-GCM). Claude carries that token on every MCP request.
+
+Two server-side secrets are required (32 random bytes each, base64-encoded). Generate once:
+
 ```bash
-claude mcp add --transport http hevy http://localhost:8080/mcp \
-  --header "X-Hevy-Api-Key: pk_..."
+openssl rand -base64 32   # OAUTH_SIGNING_KEY
+openssl rand -base64 32   # OAUTH_ENCRYPTION_KEY
 ```
 
-**Claude Desktop / other clients** (`claude_desktop_config.json`):
-```json
-{
-  "mcpServers": {
-    "hevy": {
-      "type": "http",
-      "url": "http://localhost:8080/mcp",
-      "headers": { "X-Hevy-Api-Key": "pk_..." }
-    }
-  }
-}
+Run:
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e OAUTH_SIGNING_KEY=... \
+  -e OAUTH_ENCRYPTION_KEY=... \
+  hevy-mcp --transport=http --issuer=https://your-host.example
 ```
 
-Or stdio mode:
+### Deploy on fly.io
+
+```bash
+fly launch
+fly secrets set OAUTH_SIGNING_KEY="$(openssl rand -base64 32)"
+fly secrets set OAUTH_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+fly secrets set OAUTH_ISSUER="https://<your-app>.fly.dev"
+fly deploy
+```
+
+`OAUTH_ISSUER` is the fallback for the `--issuer` flag, so the Dockerfile entrypoint doesn't need to be edited per-deployment.
+
+### Connect from Claude (web, desktop, mobile)
+
+1. In Claude → Settings → Connectors → **Add custom connector**.
+2. URL: `https://your-host.example` (the issuer URL from above).
+3. **Advanced settings → OAuth Client ID**: enter any non-empty value, e.g. `hevy-mcp`. Leave Client Secret blank.
+4. Click Connect. Claude redirects to the server's consent page.
+5. Paste your Hevy API key (find it in the Hevy app → Settings → Developer).
+6. Connect. Tools are now available in the conversation.
+
+To disconnect, regenerate your Hevy API key in the Hevy app — that immediately invalidates all outstanding tokens.
+
+### Stdio with Claude Desktop
+
 ```json
 {
   "mcpServers": {
@@ -63,26 +79,21 @@ Or stdio mode:
 
 ## Configuration
 
-The API key is the only secret and stays in the environment. Everything else is a CLI flag.
-
-**Environment variable:**
-
-| Variable | Notes |
-|---|---|
-| `HEVY_API_KEY` | Required for stdio; fallback for HTTP (per-request `X-Hevy-Api-Key` header takes precedence). Get one from your Hevy account settings. |
-
-**Flags** (`hevy-mcp --help`):
+| Variable | Mode | Notes |
+|---|---|---|
+| `HEVY_API_KEY` | stdio | Required. Single user for the process lifetime. |
+| `OAUTH_SIGNING_KEY` | http | Required. Base64-encoded 32 bytes (HMAC-SHA256). |
+| `OAUTH_ENCRYPTION_KEY` | http | Required. Base64-encoded 32 bytes (AES-256-GCM). |
+| `OAUTH_ISSUER` | http | Fallback for `--issuer`. Canonical https URL of this deployment. |
 
 | Flag | Default | Notes |
 |---|---|---|
 | `--transport` | `stdio` | `stdio` or `http`. |
-| `--port` | `8080` | HTTP listen port (only used with `--transport=http`). |
+| `--port` | `8080` | HTTP listen port (HTTP mode only). |
+| `--issuer` | — | Canonical https URL of this deployment (required in HTTP mode). |
 | `--base-url` | `https://api.hevyapp.com` | Override only for testing. |
 
-### Authentication modes
-
-- **stdio** — one process per user. The key must be in `HEVY_API_KEY` at startup.
-- **HTTP** — one process can serve multiple users. Each MCP client sends its own key via the `X-Hevy-Api-Key` request header. `HEVY_API_KEY` is used as a fallback when the header is absent (useful for single-user HTTP deployments).
+Rotating either OAuth secret invalidates every outstanding access token; users must reconnect through the consent flow.
 
 ## Tools
 
@@ -115,12 +126,13 @@ This mounts the source tree into `golang:1.25-alpine` and runs `go test ./...`. 
 ```
 cmd/hevy-mcp/          binary entry point (flag parsing, transport selection)
 internal/hevy/         REST client, request/response types
-internal/tools/        MCP tool registration, per-session auth
+internal/tools/        MCP tool registration, context-based key plumbing
+internal/oauth/        OAuth 2.1 authorization server + bearer middleware
 Dockerfile             multi-stage build → ~17 MB image
 docker-compose.yml     test runner + sample HTTP service
 ```
 
-See `architecture.md` for a full design overview and `CLAUDE.md` for agent guidelines (Hevy API quirks, conventions, gotchas).
+See `CLAUDE.md` for agent guidelines (Hevy API quirks, OAuth design notes, conventions).
 
 ## License
 
