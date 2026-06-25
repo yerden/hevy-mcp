@@ -140,6 +140,12 @@ func TestAuthorize_GET_RendersForm(t *testing.T) {
 	body := rr.Body.String()
 	assert.Contains(t, body, "Hevy API key")
 	assert.Contains(t, body, "challenge")
+	// Every OAuth param the POST handler validates must round-trip
+	// through the form as a hidden input — missing any of these causes
+	// the user-facing form submission to 400.
+	for _, name := range []string{"response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method", "resource"} {
+		assert.Contains(t, body, `name="`+name+`"`, "consent form is missing hidden input %q", name)
+	}
 }
 
 func TestAuthorize_GET_RejectsBadRedirect(t *testing.T) {

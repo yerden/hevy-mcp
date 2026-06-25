@@ -170,6 +170,7 @@ button:hover { background: #333; }
 <h1>Connect your Hevy account</h1>
 <p>Claude is requesting access to your Hevy data. Paste your Hevy API key below to grant access.</p>
 <form method="post" action="{{.Action}}">
+  <input type="hidden" name="response_type" value="code">
   <input type="hidden" name="client_id" value="{{.ClientID}}">
   <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}">
   <input type="hidden" name="state" value="{{.State}}">
