@@ -515,8 +515,12 @@ func TestTools_GetRoutineFolder(t *testing.T) {
 }
 
 func TestTools_GetExerciseHistory(t *testing.T) {
+	// Hevy's real response wraps a flat array of per-set entries under
+	// `exercise_history`. The tool forwards the raw body verbatim so the
+	// model sees Hevy's actual shape without any lossy decode step.
+	body := `{"exercise_history":[{"workout_id":"w1","workout_title":"Push","exercise_template_id":"e1","weight_kg":57,"reps":15,"set_type":"normal"}]}`
 	u := newUpstream(t)
-	u.reply(200, `{"exercise_template_id":"e1","history":[]}`)
+	u.reply(200, body)
 
 	r := u.callTool("hevy_get_exercise_history", map[string]any{
 		"id":         "e1",
@@ -526,6 +530,8 @@ func TestTools_GetExerciseHistory(t *testing.T) {
 	assert.False(t, r.IsError)
 	assert.Equal(t, "/v1/exercise_history/e1", u.lastReq.URL.Path)
 	assert.Contains(t, u.lastReq.URL.RawQuery, "start_date=2024-01-01")
+	assert.Contains(t, u.lastReq.URL.RawQuery, "end_date=2024-02-01")
+	assert.Equal(t, body, resultText(t, r))
 }
 
 func TestTools_ListBodyMeasurements(t *testing.T) {

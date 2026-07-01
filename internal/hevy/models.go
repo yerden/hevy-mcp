@@ -180,20 +180,6 @@ type PaginatedRoutineFolders struct {
 	RoutineFolders []RoutineFolder `json:"routine_folders"`
 }
 
-// ExerciseHistoryEntry is one historical instance of an exercise.
-type ExerciseHistoryEntry struct {
-	WorkoutID string       `json:"workout_id"`
-	StartTime string       `json:"start_time"`
-	EndTime   string       `json:"end_time"`
-	Sets      []WorkoutSet `json:"sets"`
-}
-
-// ExerciseHistoryResponse wraps GET /v1/exercise_history/{id} output.
-type ExerciseHistoryResponse struct {
-	ExerciseTemplateID string                 `json:"exercise_template_id"`
-	History            []ExerciseHistoryEntry `json:"history"`
-}
-
 // BodyMeasurement is a snapshot of body metrics for a given date.
 //
 // Note Hevy's mixed naming: upper-body circumferences carry a `_cm` suffix

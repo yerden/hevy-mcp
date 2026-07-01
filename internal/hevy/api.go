@@ -159,23 +159,6 @@ func (c *Client) GetRoutineFolder(id int) (*RoutineFolder, error) {
 	return out, nil
 }
 
-// Exercise history
-
-func (c *Client) GetExerciseHistory(templateID, startDate, endDate string) (*ExerciseHistoryResponse, error) {
-	q := url.Values{}
-	if startDate != "" {
-		q.Set("start_date", startDate)
-	}
-	if endDate != "" {
-		q.Set("end_date", endDate)
-	}
-	out := &ExerciseHistoryResponse{}
-	if err := c.do("GET", "/v1/exercise_history/"+url.PathEscape(templateID), q, nil, out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 // Body measurements
 
 func (c *Client) ListBodyMeasurements(page, pageSize int) (*PaginatedBodyMeasurements, error) {

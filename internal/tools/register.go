@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -296,7 +297,7 @@ func registerRoutineFolders(s *server.MCPServer, factory ClientFactory) {
 
 func registerExerciseHistory(s *server.MCPServer, factory ClientFactory) {
 	s.AddTool(mcp.NewTool("hevy_get_exercise_history",
-		mcp.WithDescription("Get historical set data for one exercise template, optionally bounded by start_date / end_date (ISO 8601)."),
+		mcp.WithDescription("Get historical set data for one exercise template, optionally bounded by start_date / end_date (ISO 8601). Returns Hevy's raw response body."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Exercise template ID.")),
 		mcp.WithString("start_date", mcp.Description("Inclusive lower bound (ISO 8601, e.g. 2024-01-01).")),
 		mcp.WithString("end_date", mcp.Description("Inclusive upper bound (ISO 8601).")),
@@ -306,9 +307,14 @@ func registerExerciseHistory(s *server.MCPServer, factory ClientFactory) {
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			start := req.GetString("start_date", "")
-			end := req.GetString("end_date", "")
-			return hevyResult(c.GetExerciseHistory(id, start, end))
+			q := url.Values{}
+			if start := req.GetString("start_date", ""); start != "" {
+				q.Set("start_date", start)
+			}
+			if end := req.GetString("end_date", ""); end != "" {
+				q.Set("end_date", end)
+			}
+			return rawResult(c.DoRaw("GET", "/v1/exercise_history/"+url.PathEscape(id), q, nil))
 		}))
 }
 

@@ -247,15 +247,6 @@ func TestClient_GetRoutineFolder(t *testing.T) {
 	assert.Equal(t, 3, got.ID)
 }
 
-func TestClient_GetExerciseHistory(t *testing.T) {
-	fs := newFakeServer(t, 200, `{"exercise_template_id":"e1","history":[]}`)
-	_, err := fs.client().GetExerciseHistory("e1", "2024-01-01", "2024-02-01")
-	require.NoError(t, err)
-	assert.Equal(t, "/v1/exercise_history/e1", fs.lastPath)
-	assert.Contains(t, fs.lastQuery, "start_date=2024-01-01")
-	assert.Contains(t, fs.lastQuery, "end_date=2024-02-01")
-}
-
 func TestClient_ListBodyMeasurements(t *testing.T) {
 	fs := newFakeServer(t, 200, `{"page":1,"page_count":1,"body_measurements":[{"date":"2024-01-01"}]}`)
 	got, err := fs.client().ListBodyMeasurements(1, 5)
