@@ -121,6 +121,25 @@ docker compose run --rm test
 
 This mounts the source tree into `golang:1.25-alpine` and runs `go test ./...`. No host Go toolchain required.
 
+## Troubleshooting
+
+Hevy client failures are logged via `slog` to stderr with a stable `event` tag, so you can grep for them in `fly logs` (or any tailer):
+
+| Event | Level | When | Fields |
+|---|---|---|---|
+| `hevy_api_error` | warn | Hevy returned a non-2xx | `method`, `path`, `status`, `body` (≤512 B) |
+| `hevy_decode_error` | error | Response body didn't parse into the expected Go type | `method`, `path`, `err`, `body` (≤1024 B); plus `key` for envelope-wrapped GETs |
+
+Tail on fly.io:
+
+```bash
+fly logs -a <your-app> | grep -E 'hevy_(api|decode)_error'
+```
+
+A `hevy_decode_error` is the main signal that Hevy's API drifted (renamed field, envelope shape changed, new required field). The truncated body in the log line is usually enough to identify what changed.
+
+Fly retains logs for a rolling window only (hours, not days). If you need longer history for post-mortem, ship them via the [Fly Log Shipper](https://github.com/superfly/fly-log-shipper) to Axiom / Datadog / Loki.
+
 ## Layout
 
 ```

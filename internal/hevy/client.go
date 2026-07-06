@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -98,9 +99,26 @@ func (c *Client) doRaw(method, path string, query url.Values, body any) ([]byte,
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Warn("hevy api error",
+			"event", "hevy_api_error",
+			"method", method,
+			"path", path,
+			"status", resp.StatusCode,
+			"body", truncate(raw, 512),
+		)
 		return nil, &APIError{StatusCode: resp.StatusCode, Message: strings.TrimSpace(string(raw))}
 	}
 	return raw, nil
+}
+
+// truncate returns s as a string, cut to at most n bytes with a marker.
+// Used to keep log lines bounded while still surfacing enough of a Hevy
+// response body to diagnose schema drift.
+func truncate(b []byte, n int) string {
+	if len(b) <= n {
+		return string(b)
+	}
+	return string(b[:n]) + "...(truncated)"
 }
 
 // do executes a request and decodes the response JSON into out. If out is nil
@@ -114,6 +132,13 @@ func (c *Client) do(method, path string, query url.Values, body, out any) error 
 		return nil
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
+		slog.Error("hevy decode error",
+			"event", "hevy_decode_error",
+			"method", method,
+			"path", path,
+			"err", err.Error(),
+			"body", truncate(raw, 1024),
+		)
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
@@ -148,6 +173,14 @@ func (c *Client) doUnwrap(method, path string, query url.Values, body any, key s
 	}
 	// Fall back to the bare shape.
 	if err := json.Unmarshal(raw, out); err != nil {
+		slog.Error("hevy decode error",
+			"event", "hevy_decode_error",
+			"method", method,
+			"path", path,
+			"key", key,
+			"err", err.Error(),
+			"body", truncate(raw, 1024),
+		)
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
