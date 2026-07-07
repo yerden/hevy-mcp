@@ -59,6 +59,10 @@ type Config struct {
 
 	// Now is a clock override for tests. Defaults to time.Now.
 	Now func() time.Time
+
+	// authorizeLimiter throttles POST /oauth/authorize per client IP.
+	// Initialized by finalize().
+	authorizeLimiter *ipRateLimiter
 }
 
 // Validate returns an error if the Config is missing required fields or
@@ -89,6 +93,9 @@ func (c *Config) finalize() {
 	}
 	if c.Now == nil {
 		c.Now = time.Now
+	}
+	if c.authorizeLimiter == nil {
+		c.authorizeLimiter = newIPRateLimiter(authorizeRatePerMin, authorizeBurst, c.Now)
 	}
 }
 

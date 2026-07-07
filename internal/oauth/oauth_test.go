@@ -246,6 +246,49 @@ func TestAuthorize_POST_BadKey_ReshowsForm(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), "Hevy rejected")
 }
 
+func TestAuthorize_POST_RateLimited(t *testing.T) {
+	// Every submission calls the validator; count them to prove the limiter
+	// short-circuits before we touch Hevy.
+	var validated int
+	cfg := newTestConfig(t, func(ctx context.Context, key string) error {
+		validated++
+		return errors.New("nope") // reject so nothing else runs
+	})
+
+	do := func() *httptest.ResponseRecorder {
+		form := authorizeForm(t, "challenge")
+		form.Set("hevy_api_key", "wrong")
+		req := httptest.NewRequest("POST", pathAuthorize, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "203.0.113.7:4321" // pin the source IP
+		rr := httptest.NewRecorder()
+		cfg.newAuthorizeHandler(testResource).ServeHTTP(rr, req)
+		return rr
+	}
+
+	// Burst of `authorizeBurst` succeeds (form is re-rendered with an error).
+	for i := 0; i < authorizeBurst; i++ {
+		rr := do()
+		require.Equal(t, http.StatusOK, rr.Code, "attempt %d expected form re-render", i+1)
+	}
+	// Next attempt is throttled — validator must NOT be called again.
+	before := validated
+	rr := do()
+	assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+	assert.NotEmpty(t, rr.Header().Get("Retry-After"))
+	assert.Equal(t, before, validated, "validator invoked after rate limit tripped")
+
+	// A different IP is unaffected — bucket is per-IP.
+	form := authorizeForm(t, "challenge")
+	form.Set("hevy_api_key", "wrong")
+	otherReq := httptest.NewRequest("POST", pathAuthorize, strings.NewReader(form.Encode()))
+	otherReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	otherReq.RemoteAddr = "198.51.100.9:1111"
+	otherRR := httptest.NewRecorder()
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(otherRR, otherReq)
+	assert.Equal(t, http.StatusOK, otherRR.Code, "different IP should not be limited")
+}
+
 func TestToken_BadPKCE(t *testing.T) {
 	cfg := newTestConfig(t, func(ctx context.Context, key string) error { return nil })
 	verifier := "real-verifier-real-verifier-real-verifier"

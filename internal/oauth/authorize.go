@@ -1,8 +1,10 @@
 package oauth
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -114,6 +116,21 @@ func (c *Config) serveAuthorizeGet(w http.ResponseWriter, r *http.Request, resou
 }
 
 func (c *Config) serveAuthorizePost(w http.ResponseWriter, r *http.Request, resourceURL string) {
+	// Rate-limit before touching the form: each POST costs a live Hevy
+	// round-trip via ValidateHevyKey, so unbounded submissions turn us
+	// into a credential-tester proxy.
+	ip := clientIP(r)
+	if !c.authorizeLimiter.Allow(ip) {
+		slog.Warn("authorize rate limited",
+			"event", "rate_limit",
+			"endpoint", pathAuthorize,
+			"ip", ip,
+		)
+		w.Header().Set("Retry-After", strconv.Itoa(60/authorizeRatePerMin))
+		http.Error(w, "too many attempts, please slow down", http.StatusTooManyRequests)
+		return
+	}
+
 	req, err := parseAuthorizeRequest(r, resourceURL)
 	if err != nil {
 		if ae, ok := err.(*authorizeError); ok {
