@@ -62,7 +62,11 @@ type Config struct {
 
 	// authorizeLimiter throttles POST /oauth/authorize per client IP.
 	// Initialized by finalize().
-	authorizeLimiter *ipRateLimiter
+	authorizeLimiter *keyRateLimiter
+
+	// mcpLimiter throttles /mcp per authenticated user (keyed by a
+	// hash of the decrypted Hevy API key). Initialized by finalize().
+	mcpLimiter *keyRateLimiter
 }
 
 // Validate returns an error if the Config is missing required fields or
@@ -95,7 +99,10 @@ func (c *Config) finalize() {
 		c.Now = time.Now
 	}
 	if c.authorizeLimiter == nil {
-		c.authorizeLimiter = newIPRateLimiter(authorizeRatePerMin, authorizeBurst, c.Now)
+		c.authorizeLimiter = newKeyRateLimiter(authorizeRatePerMin, authorizeBurst, c.Now)
+	}
+	if c.mcpLimiter == nil {
+		c.mcpLimiter = newKeyRateLimiter(mcpRatePerMin, mcpBurst, c.Now)
 	}
 }
 

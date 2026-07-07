@@ -320,6 +320,49 @@ func TestToken_BadPKCE(t *testing.T) {
 	assert.Contains(t, string(body), "invalid_grant")
 }
 
+func TestMCPRateLimit_PerUser(t *testing.T) {
+	cfg := newTestConfig(t, noopValidator)
+
+	var served int
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served++
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := cfg.MCPRateLimit(next)
+
+	do := func(key string) *httptest.ResponseRecorder {
+		ctx := tools.WithAPIKey(context.Background(), key)
+		req := httptest.NewRequest("POST", "/mcp", nil).WithContext(ctx)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	// Burst succeeds.
+	for i := 0; i < mcpBurst; i++ {
+		rr := do("hk_alice")
+		require.Equal(t, http.StatusNoContent, rr.Code, "call %d expected pass", i+1)
+	}
+	// Next call is throttled — downstream must NOT be invoked.
+	before := served
+	rr := do("hk_alice")
+	assert.Equal(t, http.StatusTooManyRequests, rr.Code)
+	assert.NotEmpty(t, rr.Header().Get("Retry-After"))
+	assert.Equal(t, before, served, "downstream invoked after rate limit tripped")
+
+	// A different user is unaffected — bucket is per-subject.
+	otherRR := do("hk_bob")
+	assert.Equal(t, http.StatusNoContent, otherRR.Code, "different user should not be limited")
+
+	// Missing API key in context: pass through unchanged (defensive; should
+	// never happen in a correctly wired mux, but we don't want to 429 for a
+	// mis-wired test either).
+	req := httptest.NewRequest("POST", "/mcp", nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	assert.Equal(t, http.StatusNoContent, rr.Code)
+}
+
 func TestBearerMiddleware_MissingAuth_401WithWWWAuthenticate(t *testing.T) {
 	cfg := newTestConfig(t, noopValidator)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

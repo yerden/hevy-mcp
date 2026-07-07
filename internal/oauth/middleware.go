@@ -1,7 +1,11 @@
 package oauth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/yerden/hevy-mcp/internal/tools"
@@ -55,5 +59,37 @@ func (c *Config) newBearerMiddleware(resourceURL string, next http.Handler) http
 		}
 		ctx := tools.WithAPIKey(r.Context(), hevyKey)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// MCPRateLimit throttles requests per authenticated user. It reads the
+// decrypted Hevy API key that BearerMiddleware placed in the request
+// context, keys a token bucket by SHA-256(key)[:16] so we never store or
+// log the raw credential, and 429s once the bucket is empty.
+//
+// MUST be composed inside BearerMiddleware: no key in context means no
+// bucket, and the request falls through unlimited (defensive — should
+// never happen in a correctly wired mux).
+func (c *Config) MCPRateLimit(next http.Handler) http.Handler {
+	c.finalize()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hevyKey, ok := tools.APIKeyFromContext(r.Context())
+		if !ok || hevyKey == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sum := sha256.Sum256([]byte(hevyKey))
+		subject := hex.EncodeToString(sum[:8])
+		if !c.mcpLimiter.Allow(subject) {
+			slog.Warn("mcp rate limited",
+				"event", "rate_limit",
+				"endpoint", "/mcp",
+				"subject", subject,
+			)
+			w.Header().Set("Retry-After", strconv.Itoa(60/mcpRatePerMin+1))
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }

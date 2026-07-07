@@ -8,16 +8,24 @@ import (
 	"time"
 )
 
-// Per-IP rate limit on POST /oauth/authorize. Each submission triggers a
-// live call to Hevy's /v1/user/info to validate the pasted API key, so an
-// unbounded submission rate turns this server into a Hevy-credential
-// tester. 5/min per IP is well below any human retry cadence and well
-// under the threshold at which brute-forcing would be productive.
+// Rate limits. Two independent buckets:
+//
+//   - /oauth/authorize POST is limited per client IP. Each submission
+//     triggers a live GET /v1/user/info against Hevy to validate the
+//     pasted API key, so unbounded traffic turns the server into a
+//     credential-tester proxy.
+//   - /mcp is limited per authenticated user (keyed by a hash of the
+//     decrypted Hevy API key). Guards against a runaway loop from a
+//     legitimate token — or a leaked one — hammering Hevy through us.
 const (
 	authorizeRatePerMin = 5
 	authorizeBurst      = 5
+
+	mcpRatePerMin = 60
+	mcpBurst      = 20
+
 	// Idle limiter entries are dropped after this window to keep the
-	// per-IP map bounded across the process lifetime.
+	// per-key map bounded across the process lifetime.
 	rateLimiterIdleEvict = 10 * time.Minute
 	// Opportunistic sweep threshold: only walk the map to evict when it
 	// grows past this. Keeps the hot path O(1) in the common case.
@@ -25,7 +33,7 @@ const (
 )
 
 // tokenBucket is a plain refill-on-read token bucket. Not safe for
-// concurrent use; the enclosing ipRateLimiter provides the mutex.
+// concurrent use; the enclosing keyRateLimiter provides the mutex.
 type tokenBucket struct {
 	tokens     float64
 	lastRefill time.Time
@@ -46,8 +54,10 @@ func (b *tokenBucket) allow(now time.Time, ratePerSec, burst float64) bool {
 	return false
 }
 
-// ipRateLimiter tracks one token bucket per client IP.
-type ipRateLimiter struct {
+// keyRateLimiter tracks one token bucket per opaque string key. Used
+// both per-IP (authorize) and per-user (mcp); the caller decides the
+// key domain.
+type keyRateLimiter struct {
 	mu       sync.Mutex
 	buckets  map[string]*tokenBucket
 	ratePerS float64
@@ -55,8 +65,8 @@ type ipRateLimiter struct {
 	now      func() time.Time
 }
 
-func newIPRateLimiter(ratePerMin, burst int, now func() time.Time) *ipRateLimiter {
-	return &ipRateLimiter{
+func newKeyRateLimiter(ratePerMin, burst int, now func() time.Time) *keyRateLimiter {
+	return &keyRateLimiter{
 		buckets:  make(map[string]*tokenBucket),
 		ratePerS: float64(ratePerMin) / 60.0,
 		burst:    float64(burst),
@@ -64,14 +74,14 @@ func newIPRateLimiter(ratePerMin, burst int, now func() time.Time) *ipRateLimite
 	}
 }
 
-func (l *ipRateLimiter) Allow(ip string) bool {
+func (l *keyRateLimiter) Allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	n := l.now()
-	b, ok := l.buckets[ip]
+	b, ok := l.buckets[key]
 	if !ok {
 		b = &tokenBucket{tokens: l.burst, lastRefill: n}
-		l.buckets[ip] = b
+		l.buckets[key] = b
 	}
 	allowed := b.allow(n, l.ratePerS, l.burst)
 	if len(l.buckets) > rateLimiterSweepAt {

@@ -122,7 +122,9 @@ func runHTTP(port int, baseURL, issuer string) {
 
 	mcpSrv := newMCPServer(tools.ContextFactory(base))
 	mcpHTTP := server.NewStreamableHTTPServer(mcpSrv)
-	guarded := cfg.BearerMiddleware(resourceURL, mcpHTTP)
+	// Rate-limit per-user inside the bearer check so unauthenticated
+	// traffic never touches the per-user buckets.
+	guarded := cfg.BearerMiddleware(resourceURL, cfg.MCPRateLimit(mcpHTTP))
 
 	mux := http.NewServeMux()
 	mux.Handle(mcpPath, guarded)
