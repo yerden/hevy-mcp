@@ -10,6 +10,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/yerden/hevy-mcp/internal/exercises"
 	"github.com/yerden/hevy-mcp/internal/hevy"
 )
 
@@ -28,6 +29,7 @@ func RegisterAll(s *server.MCPServer, factory ClientFactory) {
 	registerWorkouts(s, factory)
 	registerRoutines(s, factory)
 	registerExerciseTemplates(s, factory)
+	registerExerciseSearch(s)
 	registerRoutineFolders(s, factory)
 	registerExerciseHistory(s, factory)
 	registerBodyMeasurements(s, factory)
@@ -257,6 +259,39 @@ func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
 			}
 			return hevyResult(c.GetExerciseTemplate(id))
 		}))
+}
+
+// registerExerciseSearch adds a local-only search tool over the embedded
+// public exercise-template catalog. No Hevy round-trip is made — the catalog
+// is refreshed by running `go generate ./internal/exercises/...`.
+func registerExerciseSearch(s *server.MCPServer) {
+	s.AddTool(mcp.NewTool("hevy_search_exercise_templates",
+		mcp.WithDescription("Search the built-in Hevy exercise-template catalog (public exercises only, no round-trip). Filter by title substring, muscle group, or exercise type. Custom user-created exercises are not indexed — use hevy_list_exercise_templates for those."),
+		mcp.WithString("query",
+			mcp.Description("Case-insensitive substring match on exercise title (e.g. 'squat', 'pendlay').")),
+		mcp.WithString("muscle_group",
+			mcp.Description("Match against Hevy's muscle-group enum (e.g. chest, lats, quadriceps, biceps, cardio). Matches primary OR secondary.")),
+		mcp.WithString("exercise_type",
+			mcp.Description("Match against Hevy's exercise-type enum (e.g. weight_reps, reps_only, duration, distance_duration, bodyweight_weighted, bodyweight_assisted).")),
+		mcp.WithNumber("limit",
+			mcp.Description("Max results to return."),
+			mcp.DefaultNumber(20),
+			mcp.Min(1),
+			mcp.Max(200),
+		),
+	),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			results := exercises.Search(exercises.SearchParams{
+				Query:        req.GetString("query", ""),
+				MuscleGroup:  req.GetString("muscle_group", ""),
+				ExerciseType: req.GetString("exercise_type", ""),
+				Limit:        req.GetInt("limit", 20),
+			})
+			return jsonResult(map[string]any{
+				"count":              len(results),
+				"exercise_templates": results,
+			})
+		})
 }
 
 func registerRoutineFolders(s *server.MCPServer, factory ClientFactory) {

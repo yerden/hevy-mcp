@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/yerden/hevy-mcp/internal/exercises"
 	"github.com/yerden/hevy-mcp/internal/hevy"
 )
 
@@ -484,6 +485,29 @@ func TestTools_GetExerciseTemplate(t *testing.T) {
 	assert.Equal(t, "/v1/exercise_templates/e1", u.lastReq.URL.Path)
 }
 
+func TestTools_SearchExerciseTemplates_UsesEmbeddedCatalogNoRoundTrip(t *testing.T) {
+	u := newUpstream(t)
+
+	// Seed the embedded catalog with a small fixture for the duration of the test.
+	prev := exercises.Catalog
+	exercises.Catalog = []hevy.ExerciseTemplate{
+		{ID: "AAA", Title: "Back Squat (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
+		{ID: "BBB", Title: "Front Squat (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
+		{ID: "CCC", Title: "Bench Press (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "chest"},
+	}
+	t.Cleanup(func() { exercises.Catalog = prev })
+
+	r := u.callTool("hevy_search_exercise_templates", map[string]any{"query": "squat"})
+	assert.False(t, r.IsError)
+	assert.Nil(t, u.lastReq, "search must be local; no upstream request expected")
+
+	text := resultText(t, r)
+	assert.Contains(t, text, `"count":2`)
+	assert.Contains(t, text, "Back Squat")
+	assert.Contains(t, text, "Front Squat")
+	assert.NotContains(t, text, "Bench Press")
+}
+
 func TestTools_ListRoutineFolders(t *testing.T) {
 	u := newUpstream(t)
 	u.reply(200, `{"page":1,"page_count":1,"routine_folders":[]}`)
@@ -636,6 +660,7 @@ func TestTools_AllRegistered(t *testing.T) {
 		"hevy_list_exercise_templates",
 		"hevy_create_exercise_template",
 		"hevy_get_exercise_template",
+		"hevy_search_exercise_templates",
 		"hevy_list_routine_folders",
 		"hevy_create_routine_folder",
 		"hevy_get_routine_folder",
@@ -646,7 +671,7 @@ func TestTools_AllRegistered(t *testing.T) {
 		"hevy_update_body_measurement",
 		"hevy_get_user_info",
 	}
-	assert.Len(t, expected, 22, "should match plan total of 22 tools (21 endpoints + user info already counted)")
+	assert.Len(t, expected, 23, "22 Hevy endpoints + 1 local search tool over the embedded catalog")
 
 	// Issue tools/list to verify each tool is present.
 	msg, _ := json.Marshal(map[string]any{

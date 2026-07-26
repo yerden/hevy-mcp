@@ -41,6 +41,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/yerden/hevy-mcp/internal/exercises"
 	"github.com/yerden/hevy-mcp/internal/hevy"
 	"github.com/yerden/hevy-mcp/internal/oauth"
 	"github.com/yerden/hevy-mcp/internal/tools"
@@ -151,6 +152,12 @@ func newMCPServer(factory tools.ClientFactory) *server.MCPServer {
 		server.WithRecovery(),
 	)
 	tools.RegisterAll(s, factory)
+	if n := exercises.Size(); n == 0 {
+		log.Printf("WARNING: public exercise catalog is empty; hevy_search_exercise_templates will return no results. " +
+			"Rebuild the image with `--build-secret id=hevy_key,env=HEVY_API_KEY` (or `fly deploy --build-secret hevy_key=...`) to populate it.")
+	} else {
+		log.Printf("public exercise catalog: %d templates loaded", n)
+	}
 	return s
 }
 

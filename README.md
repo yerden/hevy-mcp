@@ -9,9 +9,11 @@ Written in Go. Single binary. Two transports: stdio (subprocess mode, single-use
 ### Stdio mode (local subprocess, single user)
 
 ```bash
-docker build -t hevy-mcp .
+DOCKER_BUILDKIT=1 docker build --secret id=hevy_key,env=HEVY_API_KEY -t hevy-mcp .
 docker run --rm -i -e HEVY_API_KEY=pk_... hevy-mcp
 ```
+
+The `--secret` flag passes your Hevy API key into the build so the public exercise catalog can be fetched and embedded into the binary (used by `hevy_search_exercise_templates`). The secret is not baked into any image layer. If you omit the flag, the build still succeeds but ships an empty catalog and logs a warning at startup.
 
 Or natively (Go 1.25+):
 
@@ -34,6 +36,7 @@ openssl rand -base64 32   # OAUTH_ENCRYPTION_KEY
 Run:
 
 ```bash
+DOCKER_BUILDKIT=1 docker build --secret id=hevy_key,env=HEVY_API_KEY -t hevy-mcp .
 docker run --rm -p 8080:8080 \
   -e OAUTH_SIGNING_KEY=... \
   -e OAUTH_ENCRYPTION_KEY=... \
@@ -47,8 +50,10 @@ fly launch
 fly secrets set OAUTH_SIGNING_KEY="$(openssl rand -base64 32)"
 fly secrets set OAUTH_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 fly secrets set OAUTH_ISSUER="https://<your-app>.fly.dev"
-fly deploy
+fly deploy --build-secret hevy_key="$HEVY_API_KEY"
 ```
+
+`--build-secret hevy_key=...` is what populates the embedded exercise catalog. Redeploy with the same flag any time you want to refresh the catalog (Hevy adds new public exercises rarely). Without it, the deploy still succeeds but `hevy_search_exercise_templates` returns no results — check `fly logs` for the startup warning.
 
 `OAUTH_ISSUER` is the fallback for the `--issuer` flag, so the Dockerfile entrypoint doesn't need to be edited per-deployment.
 
@@ -97,17 +102,19 @@ Rotating either OAuth secret invalidates every outstanding access token; users m
 
 ## Tools
 
-22 tools, all prefixed `hevy_`. Pagination is exposed via explicit `page`/`pageSize` arguments on every list tool; the model controls paging so Hevy calls stay bounded.
+23 tools, all prefixed `hevy_`. Pagination is exposed via explicit `page`/`pageSize` arguments on every list tool; the model controls paging so Hevy calls stay bounded.
 
 | Domain | Tools |
 |---|---|
 | Workouts | `list_workouts`, `create_workout`, `get_workout`, `update_workout`, `get_workout_count`, `get_workout_events` |
 | Routines | `list_routines`, `create_routine`, `get_routine`, `update_routine` |
-| Exercise templates | `list_exercise_templates`, `create_exercise_template`, `get_exercise_template` |
+| Exercise templates | `list_exercise_templates`, `create_exercise_template`, `get_exercise_template`, `search_exercise_templates` |
 | Routine folders | `list_routine_folders`, `create_routine_folder`, `get_routine_folder` |
 | Exercise history | `get_exercise_history` |
 | Body measurements | `list_body_measurements`, `create_body_measurement`, `get_body_measurement`, `update_body_measurement` |
 | User | `get_user_info` |
+
+`search_exercise_templates` runs entirely against an embedded snapshot of Hevy's public exercise catalog — no network round-trip. Filters by title substring, muscle group, or exercise type. Custom (per-user) exercises are not indexed here; use `list_exercise_templates` for those. The snapshot is populated at Docker build time (see quick-start sections above); a locally regenerated copy can be produced with `HEVY_API_KEY=... go generate ./internal/exercises/...` — but the resulting `internal/exercises/catalog.json` is not meant to be committed. Run `git update-index --skip-worktree internal/exercises/catalog.json` after a local regen to prevent accidents.
 
 Schemas for create/update tools are derived from the Hevy OpenAPI spec, so the model sees field-level structure (e.g. `folder_id`, set types, rep ranges) rather than free-form objects.
 
@@ -147,6 +154,8 @@ cmd/hevy-mcp/          binary entry point (flag parsing, transport selection)
 internal/hevy/         REST client, request/response types
 internal/tools/        MCP tool registration, context-based key plumbing
 internal/oauth/        OAuth 2.1 authorization server + bearer middleware
+internal/exercises/    embedded public exercise-template catalog + search
+internal/exercises/gen public-catalog generator (invoked at Docker build time)
 Dockerfile             multi-stage build → ~17 MB image
 docker-compose.yml     test runner + sample HTTP service
 ```
