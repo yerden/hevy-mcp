@@ -42,10 +42,11 @@ func Size() int { return len(Catalog) }
 // SearchParams filters the catalog. All filters are optional and combine with
 // AND semantics; if none are set, the first Limit entries are returned.
 type SearchParams struct {
-	Query        string // substring match on title, case-insensitive
-	MuscleGroup  string // matches primary OR secondary muscle group (exact, case-insensitive)
-	ExerciseType string // exact match on template type (case-insensitive)
-	Limit        int    // cap on returned entries; 0 or negative = no cap
+	Query             string // substring match on title, case-insensitive
+	MuscleGroup       string // matches primary OR secondary muscle group (exact, case-insensitive)
+	MuscleGroupPrimaryOnly bool // when true, MuscleGroup only matches the primary muscle group
+	ExerciseType      string // exact match on template type (case-insensitive)
+	Limit             int    // cap on returned entries; 0 or negative = no cap
 }
 
 // Search returns catalog entries matching every non-empty filter, up to Limit.
@@ -60,7 +61,7 @@ func Search(p SearchParams) []hevy.ExerciseTemplate {
 		if q != "" && !strings.Contains(strings.ToLower(t.Title), q) {
 			continue
 		}
-		if mg != "" && !matchMuscleGroup(t, mg) {
+		if mg != "" && !matchMuscleGroup(t, mg, p.MuscleGroupPrimaryOnly) {
 			continue
 		}
 		if et != "" && !strings.EqualFold(string(t.Type), et) {
@@ -74,9 +75,12 @@ func Search(p SearchParams) []hevy.ExerciseTemplate {
 	return out
 }
 
-func matchMuscleGroup(t hevy.ExerciseTemplate, mg string) bool {
+func matchMuscleGroup(t hevy.ExerciseTemplate, mg string, primaryOnly bool) bool {
 	if strings.EqualFold(string(t.PrimaryMuscleGroup), mg) {
 		return true
+	}
+	if primaryOnly {
+		return false
 	}
 	for _, s := range t.SecondaryMuscleGroups {
 		if strings.EqualFold(string(s), mg) {

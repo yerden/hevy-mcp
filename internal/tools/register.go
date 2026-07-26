@@ -270,7 +270,11 @@ func registerExerciseSearch(s *server.MCPServer) {
 		mcp.WithString("query",
 			mcp.Description("Case-insensitive substring match on exercise title (e.g. 'squat', 'pendlay').")),
 		mcp.WithString("muscle_group",
-			mcp.Description("Match against Hevy's muscle-group enum (e.g. chest, lats, quadriceps, biceps, cardio). Matches primary OR secondary.")),
+			mcp.Description("Match against Hevy's muscle-group enum (e.g. chest, lats, quadriceps, biceps, cardio). Matches primary OR secondary by default; set muscle_group_primary_only=true to restrict to the primary.")),
+		mcp.WithBoolean("muscle_group_primary_only",
+			mcp.Description("When true, muscle_group only matches an exercise's primary muscle group. Ignored when muscle_group is unset."),
+			mcp.DefaultBool(false),
+		),
 		mcp.WithString("exercise_type",
 			mcp.Description("Match against Hevy's exercise-type enum (e.g. weight_reps, reps_only, duration, distance_duration, bodyweight_weighted, bodyweight_assisted).")),
 		mcp.WithNumber("limit",
@@ -282,10 +286,11 @@ func registerExerciseSearch(s *server.MCPServer) {
 	),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			results := exercises.Search(exercises.SearchParams{
-				Query:        req.GetString("query", ""),
-				MuscleGroup:  req.GetString("muscle_group", ""),
-				ExerciseType: req.GetString("exercise_type", ""),
-				Limit:        req.GetInt("limit", 20),
+				Query:                  req.GetString("query", ""),
+				MuscleGroup:            req.GetString("muscle_group", ""),
+				MuscleGroupPrimaryOnly: req.GetBool("muscle_group_primary_only", false),
+				ExerciseType:           req.GetString("exercise_type", ""),
+				Limit:                  req.GetInt("limit", 20),
 			})
 			return jsonResult(map[string]any{
 				"count":              len(results),

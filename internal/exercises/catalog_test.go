@@ -62,6 +62,40 @@ func TestSearch_MuscleGroupMatchesPrimaryOrSecondary(t *testing.T) {
 	}
 }
 
+func TestSearch_MuscleGroupPrimaryOnly(t *testing.T) {
+	// Hammer Curl has biceps as primary; Back Squat lists biceps in no
+	// slot (only quadriceps / glutes / hamstrings). We add a synthetic
+	// entry with biceps as *secondary* to prove primary_only filters it out.
+	entries := fixture()
+	entries = append(entries, hevy.ExerciseTemplate{
+		ID: "ZZZZZZ", Title: "Pretend Row (Barbell)", Type: "weight_reps",
+		PrimaryMuscleGroup:    "upper_back",
+		SecondaryMuscleGroups: []hevy.MuscleGroup{"biceps"},
+	})
+	withFixture(t, entries)
+
+	full := Search(SearchParams{MuscleGroup: "biceps", Limit: 50})
+	primary := Search(SearchParams{MuscleGroup: "biceps", MuscleGroupPrimaryOnly: true, Limit: 50})
+
+	// full includes the secondary-biceps row; primary-only does not.
+	assert.Greater(t, len(full), len(primary))
+	for _, e := range primary {
+		assert.Equal(t, "biceps", string(e.PrimaryMuscleGroup),
+			"primary_only must exclude %s (primary=%s)", e.Title, e.PrimaryMuscleGroup)
+	}
+	// Sanity: the secondary-only entry should be in full but not primary.
+	hasSecondary := func(list []hevy.ExerciseTemplate) bool {
+		for _, e := range list {
+			if e.ID == "ZZZZZZ" {
+				return true
+			}
+		}
+		return false
+	}
+	assert.True(t, hasSecondary(full), "full match should include the secondary-biceps row")
+	assert.False(t, hasSecondary(primary), "primary-only must exclude the secondary-biceps row")
+}
+
 func TestSearch_FiltersCombineWithAnd(t *testing.T) {
 	withFixture(t, fixture())
 	got := Search(SearchParams{Query: "curl", MuscleGroup: "biceps", Limit: 10})
