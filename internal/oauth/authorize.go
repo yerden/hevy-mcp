@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 )
@@ -72,7 +71,7 @@ func (c *Config) parseAuthorizeRequest(r *http.Request, resourceURL string) (aut
 	if req.ClientID == "" {
 		return req, &authorizeError{httpStatus: http.StatusBadRequest, msg: "missing client_id"}
 	}
-	if !slices.Contains(c.AllowedRedirectURIs, req.RedirectURI) {
+	if !redirectURIAllowed(c.AllowedRedirectURIs, req.RedirectURI) {
 		return req, &authorizeError{httpStatus: http.StatusBadRequest, msg: "redirect_uri not allowed"}
 	}
 	if req.CodeChallenge == "" {
@@ -93,6 +92,42 @@ type authorizeError struct {
 }
 
 func (e *authorizeError) Error() string { return e.msg }
+
+// redirectURIAllowed reports whether got matches any entry in allowed.
+// Exact string match is the common case. As a spec-conformant exception
+// (RFC 8252 §7.3), an allowed entry with scheme "http" and host "127.0.0.1"
+// or "::1" matches any port on an incoming URI with the same scheme, host,
+// path, and query. Native MCP clients bind ephemeral loopback ports at
+// runtime, so pinning a port at config time would break them. `localhost`
+// is deliberately not treated as loopback (RFC 8252 §8.3).
+func redirectURIAllowed(allowed []string, got string) bool {
+	for _, a := range allowed {
+		if a == got {
+			return true
+		}
+		if loopbackMatch(a, got) {
+			return true
+		}
+	}
+	return false
+}
+
+func loopbackMatch(allowed, got string) bool {
+	a, err := url.Parse(allowed)
+	if err != nil || a.Scheme != "http" || !isLoopbackHost(a.Hostname()) {
+		return false
+	}
+	g, err := url.Parse(got)
+	if err != nil || g.Scheme != a.Scheme || g.Hostname() != a.Hostname() {
+		return false
+	}
+	// Path and query must still match exactly; only the port floats.
+	return g.Path == a.Path && g.RawQuery == a.RawQuery
+}
+
+func isLoopbackHost(host string) bool {
+	return host == "127.0.0.1" || host == "::1"
+}
 
 func (c *Config) serveAuthorizeGet(w http.ResponseWriter, r *http.Request, resourceURL, errMsg string) {
 	req, err := c.parseAuthorizeRequest(r, resourceURL)

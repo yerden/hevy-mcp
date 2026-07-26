@@ -185,6 +185,30 @@ func TestAuthorize_AllowlistMultipleURIs(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
+func TestRedirectURIAllowed_Loopback(t *testing.T) {
+	cases := map[string]struct {
+		allowed []string
+		got     string
+		want    bool
+	}{
+		"exact match still works":         {[]string{"https://claude.ai/cb"}, "https://claude.ai/cb", true},
+		"127.0.0.1 any port":              {[]string{"http://127.0.0.1/callback"}, "http://127.0.0.1:5173/callback", true},
+		"IPv6 loopback any port":          {[]string{"http://[::1]/callback"}, "http://[::1]:9999/callback", true},
+		"loopback with pinned port allow": {[]string{"http://127.0.0.1:5173/callback"}, "http://127.0.0.1:5173/callback", true},
+		"localhost is NOT loopback":       {[]string{"http://localhost/callback"}, "http://localhost:5173/callback", false},
+		"https loopback needs exact port": {[]string{"https://127.0.0.1/callback"}, "https://127.0.0.1:8443/callback", false},
+		"path mismatch rejected":          {[]string{"http://127.0.0.1/callback"}, "http://127.0.0.1:5173/other", false},
+		"query mismatch rejected":         {[]string{"http://127.0.0.1/callback?x=1"}, "http://127.0.0.1:5173/callback", false},
+		"host swap rejected":              {[]string{"http://127.0.0.1/callback"}, "http://127.0.0.2:5173/callback", false},
+		"not in list":                     {[]string{"http://127.0.0.1/callback"}, "https://attacker/cb", false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, redirectURIAllowed(tc.allowed, tc.got))
+		})
+	}
+}
+
 func TestAuthorize_GET_RejectsPlainPKCE(t *testing.T) {
 	cfg := newTestConfig(t, noopValidator)
 	params := authorizeQuery(t, "challenge")
