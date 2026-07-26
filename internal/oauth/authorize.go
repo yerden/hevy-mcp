@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -46,7 +47,7 @@ type authorizeRequest struct {
 
 // parseAuthorizeRequest pulls the OAuth params from the URL (GET) or form
 // (POST) and rejects anything malformed before we touch the user.
-func parseAuthorizeRequest(r *http.Request, resourceURL string) (authorizeRequest, error) {
+func (c *Config) parseAuthorizeRequest(r *http.Request, resourceURL string) (authorizeRequest, error) {
 	values := r.URL.Query()
 	if r.Method == http.MethodPost {
 		if err := r.ParseForm(); err != nil {
@@ -71,7 +72,7 @@ func parseAuthorizeRequest(r *http.Request, resourceURL string) (authorizeReques
 	if req.ClientID == "" {
 		return req, &authorizeError{httpStatus: http.StatusBadRequest, msg: "missing client_id"}
 	}
-	if req.RedirectURI != allowedRedirectURI {
+	if !slices.Contains(c.AllowedRedirectURIs, req.RedirectURI) {
 		return req, &authorizeError{httpStatus: http.StatusBadRequest, msg: "redirect_uri not allowed"}
 	}
 	if req.CodeChallenge == "" {
@@ -94,7 +95,7 @@ type authorizeError struct {
 func (e *authorizeError) Error() string { return e.msg }
 
 func (c *Config) serveAuthorizeGet(w http.ResponseWriter, r *http.Request, resourceURL, errMsg string) {
-	req, err := parseAuthorizeRequest(r, resourceURL)
+	req, err := c.parseAuthorizeRequest(r, resourceURL)
 	if err != nil {
 		if ae, ok := err.(*authorizeError); ok {
 			http.Error(w, ae.msg, ae.httpStatus)
@@ -131,7 +132,7 @@ func (c *Config) serveAuthorizePost(w http.ResponseWriter, r *http.Request, reso
 		return
 	}
 
-	req, err := parseAuthorizeRequest(r, resourceURL)
+	req, err := c.parseAuthorizeRequest(r, resourceURL)
 	if err != nil {
 		if ae, ok := err.(*authorizeError); ok {
 			http.Error(w, ae.msg, ae.httpStatus)

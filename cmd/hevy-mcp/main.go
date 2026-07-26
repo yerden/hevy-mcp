@@ -22,6 +22,10 @@
 //	OAUTH_SIGNING_KEY            base64-encoded 32-byte HMAC-SHA256 key (required)
 //	OAUTH_ENCRYPTION_KEY         base64-encoded 32-byte AES-256-GCM key (required)
 //	OAUTH_ISSUER                 fallback for --issuer when the flag is unset
+//	OAUTH_ALLOWED_REDIRECT_URIS  comma-separated list of exact redirect_uri
+//	                             values accepted at /oauth/authorize. Defaults
+//	                             to https://claude.ai/api/mcp/auth_callback
+//	                             when unset. No prefix/wildcard matching.
 package main
 
 import (
@@ -104,9 +108,10 @@ func runHTTP(port int, baseURL, issuer string) {
 	base := hevy.New("", baseURL)
 
 	cfg := &oauth.Config{
-		Issuer:        issuer,
-		SigningKey:    signingKey,
-		EncryptionKey: encryptionKey,
+		Issuer:              issuer,
+		SigningKey:          signingKey,
+		EncryptionKey:       encryptionKey,
+		AllowedRedirectURIs: parseAllowedRedirectURIs(os.Getenv("OAUTH_ALLOWED_REDIRECT_URIS")),
 		ValidateHevyKey: func(ctx context.Context, hevyKey string) error {
 			// Hit Hevy with the user-supplied key; if it returns user info,
 			// the key is real. We don't care about the body.
@@ -147,6 +152,27 @@ func newMCPServer(factory tools.ClientFactory) *server.MCPServer {
 	)
 	tools.RegisterAll(s, factory)
 	return s
+}
+
+// parseAllowedRedirectURIs splits the OAUTH_ALLOWED_REDIRECT_URIS env value
+// on commas, trims whitespace, and drops empty entries. An empty result (env
+// unset or all-whitespace) is returned as nil so oauth.Config.finalize can
+// apply its default.
+func parseAllowedRedirectURIs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // decodeSecret reads a base64-encoded secret from the env var and verifies

@@ -57,6 +57,14 @@ type Config struct {
 	// 5 minutes when unset.
 	AuthCodeTTL time.Duration
 
+	// AllowedRedirectURIs is the exact-match allowlist for the OAuth
+	// redirect_uri parameter. When empty, finalize populates it with the
+	// Claude web callback (defaultRedirectURI). All entries are compared
+	// verbatim — there is no per-client binding, prefix matching, or
+	// wildcard support. Cross-client swap is neutralised by PKCE and the
+	// RFC 8707 audience binding, so a flat allowlist is safe here.
+	AllowedRedirectURIs []string
+
 	// Now is a clock override for tests. Defaults to time.Now.
 	Now func() time.Time
 
@@ -98,6 +106,9 @@ func (c *Config) finalize() {
 	if c.Now == nil {
 		c.Now = time.Now
 	}
+	if len(c.AllowedRedirectURIs) == 0 {
+		c.AllowedRedirectURIs = []string{defaultRedirectURI}
+	}
 	if c.authorizeLimiter == nil {
 		c.authorizeLimiter = newKeyRateLimiter(authorizeRatePerMin, authorizeBurst, c.Now)
 	}
@@ -113,7 +124,7 @@ const (
 	pathProtectedResourceMeta  = "/.well-known/oauth-protected-resource"
 	pathAuthorize              = "/oauth/authorize"
 	pathToken                  = "/oauth/token"
-	allowedRedirectURI         = "https://claude.ai/api/mcp/auth_callback"
+	defaultRedirectURI         = "https://claude.ai/api/mcp/auth_callback"
 	allowedCodeChallengeMethod = "S256"
 )
 

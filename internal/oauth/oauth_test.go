@@ -158,6 +158,33 @@ func TestAuthorize_GET_RejectsBadRedirect(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
+func TestAuthorize_AllowlistMultipleURIs(t *testing.T) {
+	const extra = "http://127.0.0.1:5173/callback"
+	cfg := newTestConfig(t, noopValidator)
+	cfg.AllowedRedirectURIs = []string{defaultRedirectURI, extra}
+
+	// Default URI still accepted.
+	params := authorizeQuery(t, "challenge")
+	rr := httptest.NewRecorder()
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr,
+		httptest.NewRequest("GET", pathAuthorize+"?"+params.Encode(), nil))
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	// Second entry accepted.
+	params.Set("redirect_uri", extra)
+	rr = httptest.NewRecorder()
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr,
+		httptest.NewRequest("GET", pathAuthorize+"?"+params.Encode(), nil))
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	// Anything not on the list is still rejected.
+	params.Set("redirect_uri", "https://attacker.example/callback")
+	rr = httptest.NewRecorder()
+	cfg.newAuthorizeHandler(testResource).ServeHTTP(rr,
+		httptest.NewRequest("GET", pathAuthorize+"?"+params.Encode(), nil))
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+}
+
 func TestAuthorize_GET_RejectsPlainPKCE(t *testing.T) {
 	cfg := newTestConfig(t, noopValidator)
 	params := authorizeQuery(t, "challenge")
@@ -191,7 +218,7 @@ func TestAuthorize_POST_HappyPath_AndTokenExchange(t *testing.T) {
 
 	loc, err := url.Parse(rr.Header().Get("Location"))
 	require.NoError(t, err)
-	assert.Equal(t, allowedRedirectURI, loc.Scheme+"://"+loc.Host+loc.Path)
+	assert.Equal(t, defaultRedirectURI, loc.Scheme+"://"+loc.Host+loc.Path)
 	code := loc.Query().Get("code")
 	require.NotEmpty(t, code)
 	assert.Equal(t, "xyz-state", loc.Query().Get("state"))
@@ -201,7 +228,7 @@ func TestAuthorize_POST_HappyPath_AndTokenExchange(t *testing.T) {
 	tokForm.Set("grant_type", "authorization_code")
 	tokForm.Set("code", code)
 	tokForm.Set("code_verifier", verifier)
-	tokForm.Set("redirect_uri", allowedRedirectURI)
+	tokForm.Set("redirect_uri", defaultRedirectURI)
 	tokReq := httptest.NewRequest("POST", pathToken, strings.NewReader(tokForm.Encode()))
 	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokRR := httptest.NewRecorder()
@@ -310,7 +337,7 @@ func TestToken_BadPKCE(t *testing.T) {
 	tokForm.Set("grant_type", "authorization_code")
 	tokForm.Set("code", code)
 	tokForm.Set("code_verifier", "wrong-verifier-wrong-verifier-wrong-verifier")
-	tokForm.Set("redirect_uri", allowedRedirectURI)
+	tokForm.Set("redirect_uri", defaultRedirectURI)
 	tokReq := httptest.NewRequest("POST", pathToken, strings.NewReader(tokForm.Encode()))
 	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	tokRR := httptest.NewRecorder()
@@ -404,7 +431,7 @@ func authorizeQuery(t *testing.T, challenge string) url.Values {
 	v := url.Values{}
 	v.Set("response_type", "code")
 	v.Set("client_id", "hevy-mcp")
-	v.Set("redirect_uri", allowedRedirectURI)
+	v.Set("redirect_uri", defaultRedirectURI)
 	v.Set("state", "xyz-state")
 	v.Set("code_challenge", challenge)
 	v.Set("code_challenge_method", "S256")
