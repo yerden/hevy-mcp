@@ -8,6 +8,9 @@ primary_region = 'fra'
 
 [build]
 
+[env]
+  OAUTH_ALLOWED_REDIRECT_URIS = "https://claude.ai/api/mcp/auth_callback,https://chatgpt.com/connector_platform_oauth_redirect"
+
 [http_service]
   internal_port = 8080
   force_https = true
