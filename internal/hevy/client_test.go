@@ -371,6 +371,79 @@ func TestClient_GetRoutine_UnwrapsEnvelope(t *testing.T) {
 	assert.Equal(t, "r1", got.ID)
 }
 
+// Bug 5: Hevy's live API returns `superset_id` (singular) on reads, though
+// the OpenAPI spec documents it as `supersets_id` (plural). Our decoder must
+// pick up either. Additionally the field must not be `omitempty` on output —
+// callers need to see `null` explicitly to distinguish "not in a superset"
+// from "field was dropped".
+func TestClient_GetWorkout_SupersetIDSingularOnResponse(t *testing.T) {
+	body := `{"id":"w1","title":"x","start_time":"","end_time":"","exercises":[{"exercise_template_id":"t1","superset_id":7,"sets":[]},{"exercise_template_id":"t2","superset_id":null,"sets":[]}]}`
+	fs := newFakeServer(t, 200, body)
+	got, err := fs.client().GetWorkout("w1")
+	require.NoError(t, err)
+	require.Len(t, got.Exercises, 2)
+	require.NotNil(t, got.Exercises[0].SupersetID)
+	assert.Equal(t, 7, *got.Exercises[0].SupersetID)
+	assert.Nil(t, got.Exercises[1].SupersetID)
+}
+
+// Defensive: if Hevy ever changes to match the spec (`supersets_id`), still parse.
+func TestClient_GetWorkout_SupersetIDPluralOnResponse(t *testing.T) {
+	body := `{"id":"w1","title":"x","start_time":"","end_time":"","exercises":[{"exercise_template_id":"t1","supersets_id":9,"sets":[]}]}`
+	fs := newFakeServer(t, 200, body)
+	got, err := fs.client().GetWorkout("w1")
+	require.NoError(t, err)
+	require.Len(t, got.Exercises, 1)
+	require.NotNil(t, got.Exercises[0].SupersetID)
+	assert.Equal(t, 9, *got.Exercises[0].SupersetID)
+}
+
+// If both keys somehow appear, singular wins (it's what Hevy actually sends).
+func TestClient_GetWorkout_SupersetIDSingularWinsOverPlural(t *testing.T) {
+	body := `{"id":"w1","title":"x","start_time":"","end_time":"","exercises":[{"exercise_template_id":"t1","superset_id":1,"supersets_id":2,"sets":[]}]}`
+	fs := newFakeServer(t, 200, body)
+	got, err := fs.client().GetWorkout("w1")
+	require.NoError(t, err)
+	require.NotNil(t, got.Exercises[0].SupersetID)
+	assert.Equal(t, 1, *got.Exercises[0].SupersetID)
+}
+
+// Marshaling a WorkoutExercise must always include superset_id, even when nil,
+// so downstream consumers can tell "unpaired" from "unknown".
+func TestWorkoutExercise_MarshalsSupersetIDEvenWhenNil(t *testing.T) {
+	buf, err := json.Marshal(WorkoutExercise{ExerciseTemplateID: "t1", Sets: []WorkoutSet{}})
+	require.NoError(t, err)
+	assert.Contains(t, string(buf), `"superset_id":null`, "body=%s", string(buf))
+	assert.NotContains(t, string(buf), "supersets_id")
+}
+
+func TestWorkoutExercise_MarshalsSupersetIDWhenSet(t *testing.T) {
+	id := 7
+	buf, err := json.Marshal(WorkoutExercise{ExerciseTemplateID: "t1", SupersetID: &id, Sets: []WorkoutSet{}})
+	require.NoError(t, err)
+	assert.Contains(t, string(buf), `"superset_id":7`, "body=%s", string(buf))
+}
+
+// Same behavior for RoutineExercise.
+func TestRoutineExercise_ParsesBothKeysAndMarshalsSingular(t *testing.T) {
+	// singular
+	var ex RoutineExercise
+	require.NoError(t, json.Unmarshal([]byte(`{"exercise_template_id":"t1","superset_id":3,"sets":[]}`), &ex))
+	require.NotNil(t, ex.SupersetID)
+	assert.Equal(t, 3, *ex.SupersetID)
+
+	// plural
+	var ex2 RoutineExercise
+	require.NoError(t, json.Unmarshal([]byte(`{"exercise_template_id":"t1","supersets_id":4,"sets":[]}`), &ex2))
+	require.NotNil(t, ex2.SupersetID)
+	assert.Equal(t, 4, *ex2.SupersetID)
+
+	// marshal always singular, always present
+	buf, err := json.Marshal(RoutineExercise{ExerciseTemplateID: "t1", Sets: []RoutineSet{}})
+	require.NoError(t, err)
+	assert.Contains(t, string(buf), `"superset_id":null`, "body=%s", string(buf))
+}
+
 // CreateExerciseTemplate accepts integer or string IDs from Hevy.
 func TestClient_CreateExerciseTemplate_IntegerID(t *testing.T) {
 	fs := newFakeServer(t, 201, `{"id":12345}`)

@@ -32,7 +32,7 @@ Reusing one struct for request and response is tempting but breaks. Hevy rejects
 - `created_at` / `updated_at` — output-only.
 - Field renames between input and output:
   - Exercise templates: response `type`/`primary_muscle_group`/`secondary_muscle_groups` vs request `exercise_type`/`muscle_group`/`other_muscles`.
-  - Exercises: response `supersets_id` (plural) vs request `superset_id` (singular).
+  - Exercises: the OpenAPI spec claims response `supersets_id` (plural) vs request `superset_id` (singular), but the live API actually uses `superset_id` on both directions. Verified 2026-07-31 via a POST+GET round-trip against `api.hevyapp.com`. Our response types parse both names (see `WorkoutExercise.UnmarshalJSON`) but emit the singular form. If a future decoder update needs the field, use `superset_id`.
 
 Response types live in `internal/hevy/models.go`. Request types live in `internal/hevy/requests.go` (`RoutineCreate`, `RoutineUpdate`, `WorkoutPayload`, `RoutineFolderCreate`, `ExerciseTemplateCreate`, etc.). **Do not** add output-only fields to the input types.
 

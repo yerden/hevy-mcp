@@ -8,6 +8,8 @@
 // `primary_muscle_group`/`secondary_muscle_groups`).
 package hevy
 
+import "encoding/json"
+
 // SetType is the kind of set logged in a workout or routine.
 type SetType string
 
@@ -43,16 +45,36 @@ type WorkoutSet struct {
 
 // WorkoutExercise represents one exercise within a workout (response shape).
 //
-// Hevy responses use `supersets_id` (plural), while the create/update request
-// schema uses `superset_id`. We use a single `SupersetID` field with the
-// response key on output types and a different name on the input types.
+// SupersetID is emitted (and expected) as `superset_id` — matching what the
+// live Hevy API returns and what the write schema accepts, despite the
+// OpenAPI spec documenting the read field as `supersets_id` (plural). We
+// also parse `supersets_id` defensively via UnmarshalJSON in case Hevy ever
+// reconciles the response shape to the spec. No `omitempty`: callers need
+// to distinguish "not in a superset" (null) from "field wasn't returned".
 type WorkoutExercise struct {
 	Index              *int         `json:"index,omitempty"`
 	Title              string       `json:"title,omitempty"`
 	Notes              string       `json:"notes,omitempty"`
 	ExerciseTemplateID string       `json:"exercise_template_id"`
-	SupersetID         *int         `json:"supersets_id,omitempty"`
+	SupersetID         *int         `json:"superset_id"`
 	Sets               []WorkoutSet `json:"sets"`
+}
+
+// UnmarshalJSON accepts both `superset_id` (what Hevy actually returns) and
+// `supersets_id` (what the OpenAPI spec claims) for the superset field.
+func (e *WorkoutExercise) UnmarshalJSON(data []byte) error {
+	type alias WorkoutExercise
+	aux := struct {
+		*alias
+		SupersetIDPlural *int `json:"supersets_id"`
+	}{alias: (*alias)(e)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if e.SupersetID == nil && aux.SupersetIDPlural != nil {
+		e.SupersetID = aux.SupersetIDPlural
+	}
+	return nil
 }
 
 // Workout is a completed workout record (response shape).
@@ -116,14 +138,34 @@ type RoutineSet struct {
 }
 
 // RoutineExercise represents one exercise in a routine (response shape).
+//
+// See WorkoutExercise for why SupersetID uses `superset_id` (not `supersets_id`
+// as the spec claims) and has no `omitempty`.
 type RoutineExercise struct {
 	Index              *int         `json:"index,omitempty"`
 	Title              string       `json:"title,omitempty"`
 	Notes              string       `json:"notes,omitempty"`
 	RestSeconds        *int         `json:"rest_seconds,omitempty"`
 	ExerciseTemplateID string       `json:"exercise_template_id"`
-	SupersetID         *int         `json:"supersets_id,omitempty"`
+	SupersetID         *int         `json:"superset_id"`
 	Sets               []RoutineSet `json:"sets"`
+}
+
+// UnmarshalJSON accepts both `superset_id` and `supersets_id` — see
+// WorkoutExercise.UnmarshalJSON.
+func (e *RoutineExercise) UnmarshalJSON(data []byte) error {
+	type alias RoutineExercise
+	aux := struct {
+		*alias
+		SupersetIDPlural *int `json:"supersets_id"`
+	}{alias: (*alias)(e)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if e.SupersetID == nil && aux.SupersetIDPlural != nil {
+		e.SupersetID = aux.SupersetIDPlural
+	}
+	return nil
 }
 
 // Routine is a workout template (response shape).
