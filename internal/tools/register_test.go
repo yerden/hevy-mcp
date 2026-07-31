@@ -52,6 +52,16 @@ func newUpstream(t *testing.T) *upstream {
 	return u
 }
 
+// seedCatalog installs a temporary exercise catalog for the duration of the
+// test. Callers must invoke it before newUpstream, because registerExerciseSearch
+// consults the catalog at registration time and skips itself when empty.
+func seedCatalog(t *testing.T, entries []hevy.ExerciseTemplate) {
+	t.Helper()
+	prev := exercises.Catalog
+	exercises.Catalog = entries
+	t.Cleanup(func() { exercises.Catalog = prev })
+}
+
 // reply sets the next upstream response.
 func (u *upstream) reply(status int, body string) {
 	u.handler = func(w http.ResponseWriter, r *http.Request) {
@@ -486,16 +496,14 @@ func TestTools_GetExerciseTemplate(t *testing.T) {
 }
 
 func TestTools_SearchExerciseTemplates_UsesEmbeddedCatalogNoRoundTrip(t *testing.T) {
-	u := newUpstream(t)
-
-	// Seed the embedded catalog with a small fixture for the duration of the test.
-	prev := exercises.Catalog
-	exercises.Catalog = []hevy.ExerciseTemplate{
+	// Seed the catalog BEFORE newUpstream — registerExerciseSearch skips
+	// registration when the catalog is empty (the repo's stub state).
+	seedCatalog(t, []hevy.ExerciseTemplate{
 		{ID: "AAA", Title: "Back Squat (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
 		{ID: "BBB", Title: "Front Squat (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
 		{ID: "CCC", Title: "Bench Press (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "chest"},
-	}
-	t.Cleanup(func() { exercises.Catalog = prev })
+	})
+	u := newUpstream(t)
 
 	r := u.callTool("hevy_search_exercise_templates", map[string]any{"query": "squat"})
 	assert.False(t, r.IsError)
@@ -506,6 +514,38 @@ func TestTools_SearchExerciseTemplates_UsesEmbeddedCatalogNoRoundTrip(t *testing
 	assert.Contains(t, text, "Back Squat")
 	assert.Contains(t, text, "Front Squat")
 	assert.NotContains(t, text, "Bench Press")
+}
+
+// Empty catalog → tool must not be advertised at all. Otherwise the model sees
+// a search tool that always returns zero results, wasting schema tokens.
+func TestTools_SearchExerciseTemplates_SkippedWhenCatalogEmpty(t *testing.T) {
+	// Explicitly set an empty catalog (defensive — the embedded stub is
+	// already empty in tests, but this guards against a future change).
+	seedCatalog(t, nil)
+	u := newUpstream(t)
+
+	msg, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/list",
+	})
+	resp := u.server.HandleMessage(context.Background(), msg)
+	jr, ok := resp.(mcp.JSONRPCResponse)
+	require.True(t, ok)
+	var listResult mcp.ListToolsResult
+	switch v := jr.Result.(type) {
+	case *mcp.ListToolsResult:
+		listResult = *v
+	case mcp.ListToolsResult:
+		listResult = v
+	default:
+		t.Fatalf("expected ListToolsResult, got %T", jr.Result)
+	}
+	for _, tool := range listResult.Tools {
+		if tool.Name == "hevy_search_exercise_templates" {
+			t.Fatalf("expected hevy_search_exercise_templates to be absent when catalog is empty")
+		}
+	}
 }
 
 func TestTools_ListRoutineFolders(t *testing.T) {
@@ -643,6 +683,11 @@ func TestTools_CreateRoutine_SchemaAdvertisesFields(t *testing.T) {
 }
 
 func TestTools_AllRegistered(t *testing.T) {
+	// Seed the catalog so hevy_search_exercise_templates gets registered
+	// (see registerExerciseSearch).
+	seedCatalog(t, []hevy.ExerciseTemplate{
+		{ID: "AAA", Title: "Squat", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
+	})
 	u := newUpstream(t)
 	u.reply(200, `{"page":1,"page_count":1,"workouts":[]}`)
 

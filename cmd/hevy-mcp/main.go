@@ -153,8 +153,9 @@ func newMCPServer(factory tools.ClientFactory) *server.MCPServer {
 	)
 	tools.RegisterAll(s, factory)
 	if n := exercises.Size(); n == 0 {
-		log.Printf("WARNING: public exercise catalog is empty; hevy_search_exercise_templates will return no results. " +
-			"Rebuild the image with `--build-secret id=hevy_key,env=HEVY_API_KEY` (or `fly deploy --build-secret hevy_key=...`) to populate it.")
+		log.Printf("WARNING: public exercise catalog is empty; skipping hevy_search_exercise_templates registration. " +
+			"Rebuild the image with `--build-secret id=hevy_key,env=HEVY_API_KEY` (or `fly deploy --build-secret hevy_key=...`) to populate it, " +
+			"or run `go generate ./internal/exercises/...` locally.")
 	} else {
 		log.Printf("public exercise catalog: %d templates loaded", n)
 	}

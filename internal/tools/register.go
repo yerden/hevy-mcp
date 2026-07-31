@@ -264,7 +264,14 @@ func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
 // registerExerciseSearch adds a local-only search tool over the embedded
 // public exercise-template catalog. No Hevy round-trip is made — the catalog
 // is refreshed by running `go generate ./internal/exercises/...`.
+//
+// The tool is a no-op when the catalog is empty (build without the generated
+// snapshot, or a fresh checkout), so we skip registration entirely rather
+// than expose a schema that always returns zero results.
 func registerExerciseSearch(s *server.MCPServer) {
+	if len(exercises.Catalog) == 0 {
+		return
+	}
 	s.AddTool(mcp.NewTool("hevy_search_exercise_templates",
 		mcp.WithDescription("Search the built-in Hevy exercise-template catalog (public exercises only, no round-trip). Filter by title substring, muscle group, or exercise type. Custom user-created exercises are not indexed — use hevy_list_exercise_templates for those."),
 		mcp.WithString("query",
