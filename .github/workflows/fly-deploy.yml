@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 jobs:
   test:
     name: Test
@@ -15,6 +16,7 @@ jobs:
   deploy:
     name: Deploy app
     needs: test
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     concurrency: deploy-group
     steps:
