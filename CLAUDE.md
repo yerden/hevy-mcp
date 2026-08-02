@@ -104,6 +104,20 @@ Two distinct auth paths, one per transport. There is no `X-Hevy-Api-Key` header 
 - The MCP server's `tools/call` result is `*mcp.CallToolResult` (pointer); `tools/list` is `*mcp.ListToolsResult`. Both helpers in `register_test.go` accept either pointer or value form, defensively.
 - When adding tests for wire-shape behavior, decode `u.lastBody` into a typed struct rather than substring-matching — JSON field order is not guaranteed.
 
+## CI / deploy (GitHub Actions)
+
+The workflow lives at `.github/workflows/fly-deploy.yml`. Two jobs:
+
+- **`test`** runs on every push to `main` (and on manual dispatch). Executes `docker compose run --rm test` — same command CLAUDE.md's testing rule specifies. If you change the test invocation, keep the workflow and `docker-compose.yml` `test` service in sync.
+- **`deploy`** is `workflow_dispatch`-gated (`if: github.event_name == 'workflow_dispatch'`). Push does not ship — you must click Run workflow. It `needs: test`, verifies `FLY_API_TOKEN` and `HEVY_API_KEY` secrets are set (fails fast if not), then runs `flyctl deploy --remote-only --build-secret hevy_key="$HEVY_API_KEY"`.
+
+Things to remember when touching build/deploy code:
+
+- **BuildKit secrets are wired end-to-end.** The Dockerfile mounts `--mount=type=secret,id=hevy_key` to populate the embedded exercise catalog via `go generate`. The workflow passes `--build-secret hevy_key="$HEVY_API_KEY"`. If you add another build secret, wire all three sites (Dockerfile mount, workflow flag, GitHub Actions secret) or the build will silently use empty input.
+- **Runtime env vars are separate from build secrets.** Public values (like `OAUTH_ALLOWED_REDIRECT_URIS`) go in `fly.toml`'s `[env]`. Private values (`OAUTH_SIGNING_KEY`, `OAUTH_ENCRYPTION_KEY`) are set via `flyctl secrets set` and are *not* touched by the workflow. Adding a new required runtime secret means updating this list and telling the operator to run `flyctl secrets set` — the workflow won't do it for them.
+- **`setup-flyctl` is pinned to a specific tag** (`@1.5`), not `@master` or `@v1`. Bump deliberately, not accidentally.
+- **Deploys don't auto-fire.** Any advice about "just push and it'll deploy" is wrong here — the user chose manual gating on purpose. Suggest the Actions UI or `gh workflow run fly-deploy.yml` for deploys, not a git push.
+
 ## When in doubt
 
 - **API behavior questions**: the Hevy OpenAPI spec lives at `https://api.hevyapp.com/docs`. It's served as Swagger UI; the JSON spec is embedded in `swagger-ui-init.js` as a `swaggerDoc` object. Brace-match it out, parse, inspect. The user has confirmed the spec is mostly accurate, but POST response shapes drift — trust the raw-bytes pattern over the spec.
