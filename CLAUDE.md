@@ -64,9 +64,11 @@ Hevy's OpenAPI spec says POST endpoints return the created object, but in practi
 
 For GET endpoints, `Client.doUnwrap(method, path, query, body, key, out)` tries `{"<key>": {...}}` first, falls back to bare. Use this for `GET /v1/routines/{id}` (documented wrapping), and apply it as a precaution to other single-resource GETs.
 
-### Routine UPDATE schema has no `folder_id`
+### Routine UPDATE rejects `folder_id`
 
-Per Hevy spec, `PutRoutinesRequestBody.routine` does not include `folder_id`. Folder placement can't be changed through update. Use a different flow if you need to move a routine. `RoutineUpdate` reflects this deliberately.
+Per Hevy spec, `PutRoutinesRequestBody.routine` does not include `folder_id`, and the live API enforces this: sending it in a PUT body returns `HTTP 400 {"error":"Unrecognized key(s) in object: 'folder_id'"}` (verified 2026-08-02 via raw PUT against `api.hevyapp.com`). The rejection is atomic — no partial write. Omitting `folder_id` from the PUT body preserves the routine's existing folder placement server-side; `folder_id` still appears in GET/PUT *response* bodies.
+
+Folder placement can't be changed through update — use a different flow if you need to move a routine. `RoutineUpdate` omits the field entirely (not `*int` + `omitempty`) so no caller can accidentally send it and 400 the whole update.
 
 ### Exercise template create returns `{"id": ...}` with ambiguous typing
 
