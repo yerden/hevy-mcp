@@ -149,14 +149,24 @@ type PaginatedRoutines struct {
 //
 // Field names differ between input and output for this resource: the response
 // uses `type`/`primary_muscle_group`/`secondary_muscle_groups`, while the
-// create-request uses `exercise_type`/`muscle_group`/`other_muscles`.
+// create-request uses `exercise_type`/`muscle_group`/`other_muscles`. Same for
+// equipment: the response field is `equipment`, the request field is
+// `equipment_category`.
+//
+// Type values on reads are a superset of the create enum: Hevy returns
+// `bodyweight_weighted`, `bodyweight_assisted`, `floors_duration` and
+// `steps_duration`, none of which the create endpoint accepts (it takes
+// `bodyweight_reps` / `bodyweight_assisted_reps` instead). Treat the field as
+// an open string, not a closed set.
 type ExerciseTemplate struct {
-	ID                    string        `json:"id"`
-	Title                 string        `json:"title"`
-	Type                  ExerciseType  `json:"type"`
-	PrimaryMuscleGroup    MuscleGroup   `json:"primary_muscle_group"`
-	SecondaryMuscleGroups []MuscleGroup `json:"secondary_muscle_groups,omitempty"`
-	IsCustom              bool          `json:"is_custom,omitempty"`
+	ID                    string            `json:"id"`
+	Title                 string            `json:"title"`
+	Type                  ExerciseType      `json:"type"`
+	PrimaryMuscleGroup    MuscleGroup       `json:"primary_muscle_group"`
+	SecondaryMuscleGroups []MuscleGroup     `json:"secondary_muscle_groups,omitempty"`
+	Equipment             EquipmentCategory `json:"equipment,omitempty"`
+	ThumbnailURL          string            `json:"thumbnail_url,omitempty"`
+	IsCustom              bool              `json:"is_custom,omitempty"`
 }
 
 // PaginatedExerciseTemplates wraps an exercise templates page response.
@@ -182,12 +192,19 @@ type PaginatedRoutineFolders struct {
 	RoutineFolders []RoutineFolder `json:"routine_folders"`
 }
 
-// BodyMeasurement is a snapshot of body metrics for a given date.
+// BodyMeasurement is a snapshot of body metrics for a given date (response
+// shape — see BodyMeasurementInput in requests.go for writes).
 //
 // Note Hevy's mixed naming: upper-body circumferences carry a `_cm` suffix
 // while lower-body ones don't (`abdomen`, `waist`, `hips`, `left_thigh`,
 // etc.). We follow the API verbatim.
+//
+// ID and CreatedAt are server-owned and output-only. Neither appears in
+// Hevy's OpenAPI spec, but both are returned by every read (live-verified
+// 2026-10-19); MergeBodyMeasurement strips them before writing.
 type BodyMeasurement struct {
+	ID             *int     `json:"id,omitempty"`
+	CreatedAt      string   `json:"created_at,omitempty"`
 	Date           string   `json:"date"`
 	WeightKg       *float64 `json:"weight_kg,omitempty"`
 	LeanMassKg     *float64 `json:"lean_mass_kg,omitempty"`
@@ -216,8 +233,15 @@ type PaginatedBodyMeasurements struct {
 }
 
 // UserInfo represents the authenticated Hevy user.
+//
+// IsPro has no `omitempty`: `false` is a meaningful answer ("not a Pro
+// subscriber") and must be distinguishable from "field absent".
 type UserInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	ID           string `json:"id"`
+	Username     string `json:"username,omitempty"`
+	Name         string `json:"name"`
+	URL          string `json:"url"`
+	WeightUnit   string `json:"weight_unit,omitempty"`
+	DistanceUnit string `json:"distance_unit,omitempty"`
+	IsPro        bool   `json:"is_pro"`
 }

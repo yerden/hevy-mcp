@@ -257,7 +257,7 @@ func TestClient_ListBodyMeasurements(t *testing.T) {
 
 func TestClient_CreateBodyMeasurement(t *testing.T) {
 	fs := newFakeServer(t, 201, ``)
-	err := fs.client().CreateBodyMeasurement(&BodyMeasurement{Date: "2024-01-01"})
+	err := fs.client().CreateBodyMeasurement(&BodyMeasurementInput{Date: "2024-01-01"})
 	require.NoError(t, err)
 	assert.Equal(t, "POST", fs.lastMethod)
 	assert.Equal(t, "/v1/body_measurements", fs.lastPath)
@@ -274,7 +274,7 @@ func TestClient_GetBodyMeasurement(t *testing.T) {
 
 func TestClient_UpdateBodyMeasurement(t *testing.T) {
 	fs := newFakeServer(t, 200, ``)
-	err := fs.client().UpdateBodyMeasurement("2024-01-01", &BodyMeasurement{Date: "2024-01-01"})
+	err := fs.client().UpdateBodyMeasurement("2024-01-01", &BodyMeasurementInput{Date: "2024-01-01"})
 	require.NoError(t, err)
 	assert.Equal(t, "PUT", fs.lastMethod)
 	assert.Equal(t, "/v1/body_measurements/2024-01-01", fs.lastPath)
@@ -430,4 +430,137 @@ func TestClient_CreateExerciseTemplate_StringID(t *testing.T) {
 	id, err := fs.client().CreateExerciseTemplate(&CreateExerciseTemplateRequest{Exercise: ExerciseTemplateCreate{Title: "X"}})
 	require.NoError(t, err)
 	assert.Equal(t, "abc-123", id)
+}
+
+// Hevy's user info response carries more than id/name/url: username, the
+// account's unit preferences, and the Pro flag (live-verified 2026-10-19).
+func TestClient_GetUserInfo_DecodesUnitsAndProFlag(t *testing.T) {
+	fs := newFakeServer(t, 200, `{"data":{"id":"u1","username":"alice","name":"Alice","url":"https://hevy.com/alice","weight_unit":"kg","distance_unit":"kilometers","is_pro":true}}`)
+	got, err := fs.client().GetUserInfo()
+	require.NoError(t, err)
+	assert.Equal(t, &UserInfo{
+		ID:           "u1",
+		Username:     "alice",
+		Name:         "Alice",
+		URL:          "https://hevy.com/alice",
+		WeightUnit:   "kg",
+		DistanceUnit: "kilometers",
+		IsPro:        true,
+	}, got)
+}
+
+// `is_pro` must survive as an explicit false — a non-Pro account has to be
+// distinguishable from a response that omitted the field.
+func TestClient_UserInfo_IsProFalseSerializes(t *testing.T) {
+	buf, err := json.Marshal(UserInfo{ID: "u1"})
+	require.NoError(t, err)
+	assert.Contains(t, string(buf), `"is_pro":false`)
+}
+
+// Exercise templates carry `equipment` and `thumbnail_url` on reads; neither
+// is part of the create request shape.
+func TestClient_GetExerciseTemplate_DecodesEquipmentAndThumbnail(t *testing.T) {
+	fs := newFakeServer(t, 200, `{"id":"e1","title":"Bench Press (Barbell)","type":"weight_reps","primary_muscle_group":"chest","secondary_muscle_groups":["triceps"],"equipment":"barbell","thumbnail_url":"https://example.invalid/bench.jpg","is_custom":false}`)
+	got, err := fs.client().GetExerciseTemplate("e1")
+	require.NoError(t, err)
+	assert.Equal(t, EquipmentCategory("barbell"), got.Equipment)
+	assert.Equal(t, "https://example.invalid/bench.jpg", got.ThumbnailURL)
+}
+
+// Hevy's routine PUT distinguishes "folder_id absent" (keep placement) from
+// "folder_id: null" (move to My Routines) from "folder_id: N" (move into N).
+// All three must survive serialization.
+func TestRoutineUpdate_FolderPlacementTriState(t *testing.T) {
+	t.Run("absent keeps placement", func(t *testing.T) {
+		buf, err := json.Marshal(RoutineUpdate{Title: "PPL"})
+		require.NoError(t, err)
+		assert.NotContains(t, string(buf), "folder_id")
+	})
+
+	t.Run("MoveToFolder sends the id", func(t *testing.T) {
+		r := RoutineUpdate{Title: "PPL"}
+		r.MoveToFolder(3101367)
+		buf, err := json.Marshal(r)
+		require.NoError(t, err)
+		assert.Contains(t, string(buf), `"folder_id":3101367`)
+	})
+
+	t.Run("MoveToMyRoutines sends null", func(t *testing.T) {
+		r := RoutineUpdate{Title: "PPL"}
+		r.MoveToMyRoutines()
+		buf, err := json.Marshal(r)
+		require.NoError(t, err)
+		assert.Contains(t, string(buf), `"folder_id":null`)
+	})
+}
+
+// PUT /v1/body_measurements/{date} is a destructive full replace that ignores
+// unknown keys instead of rejecting them (live-verified 2026-10-19, after it
+// silently wiped a real row). MergeBodyMeasurement is what keeps a partial
+// update from clearing the rest of the row.
+func TestMergeBodyMeasurement(t *testing.T) {
+	const current = `{"id":73949311,"date":"2026-10-16","weight_kg":75.61,"lean_mass_kg":64.65,"fat_percent":14.5,"created_at":"2026-10-16T01:51:40.082Z"}`
+	f := func(v float64) *float64 { return &v }
+
+	t.Run("unset metrics keep their stored values", func(t *testing.T) {
+		buf, err := MergeBodyMeasurement([]byte(current), &BodyMeasurementInput{
+			Date:     "2026-10-16",
+			WeightKg: f(76.2),
+		})
+		require.NoError(t, err)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(buf, &got))
+		assert.Equal(t, 76.2, got["weight_kg"], "provided field wins")
+		assert.Equal(t, 64.65, got["lean_mass_kg"], "unset field must survive")
+		assert.Equal(t, 14.5, got["fat_percent"], "unset field must survive")
+		assert.Equal(t, "2026-10-16", got["date"])
+	})
+
+	t.Run("server-owned fields are stripped", func(t *testing.T) {
+		buf, err := MergeBodyMeasurement([]byte(current), &BodyMeasurementInput{Date: "2026-10-16"})
+		require.NoError(t, err)
+		assert.NotContains(t, string(buf), "created_at")
+		assert.NotContains(t, string(buf), `"id"`)
+	})
+
+	// Working from raw bytes rather than a decoded struct means a field Hevy
+	// adds before we model it isn't destroyed by the next update.
+	t.Run("unmodelled fields survive", func(t *testing.T) {
+		buf, err := MergeBodyMeasurement([]byte(`{"date":"2026-10-16","future_metric":42}`), &BodyMeasurementInput{
+			Date:     "2026-10-16",
+			WeightKg: f(76.2),
+		})
+		require.NoError(t, err)
+		assert.Contains(t, string(buf), `"future_metric":42`)
+	})
+
+	t.Run("empty current row is not an error", func(t *testing.T) {
+		buf, err := MergeBodyMeasurement(nil, &BodyMeasurementInput{Date: "2026-10-16", WeightKg: f(76.2)})
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"date":"2026-10-16","weight_kg":76.2}`, string(buf))
+	})
+
+	t.Run("garbage current row is an error", func(t *testing.T) {
+		_, err := MergeBodyMeasurement([]byte(`not json`), &BodyMeasurementInput{Date: "2026-10-16"})
+		require.Error(t, err)
+	})
+}
+
+// The input type must not carry the server-owned fields that reads include.
+func TestBodyMeasurementInput_OmitsOutputOnlyFields(t *testing.T) {
+	buf, err := json.Marshal(BodyMeasurementInput{Date: "2026-10-16"})
+	require.NoError(t, err)
+	assert.Equal(t, `{"date":"2026-10-16"}`, string(buf))
+}
+
+// Reads carry id and created_at; both are absent from the spec but present on
+// every live row.
+func TestBodyMeasurement_DecodesServerOwnedFields(t *testing.T) {
+	fs := newFakeServer(t, 200, `{"id":73949311,"date":"2026-10-16","weight_kg":75.61,"created_at":"2026-10-16T01:51:40.082Z"}`)
+	got, err := fs.client().GetBodyMeasurement("2026-10-16")
+	require.NoError(t, err)
+	require.NotNil(t, got.ID)
+	assert.Equal(t, 73949311, *got.ID)
+	assert.Equal(t, "2026-10-16T01:51:40.082Z", got.CreatedAt)
 }

@@ -4,7 +4,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -90,7 +92,16 @@ func pageArgs(req mcp.CallToolRequest) (int, int) {
 	return req.GetInt("page", 1), req.GetInt("pageSize", 10)
 }
 
+// paginationOpts returns page/pageSize options capped at 10, Hevy's limit on
+// every list endpoint except /v1/exercise_templates — see paginationOptsMax.
 func paginationOpts() []mcp.ToolOption {
+	return paginationOptsMax(10)
+}
+
+// paginationOptsMax is paginationOpts with an explicit pageSize ceiling. The
+// default stays 10 regardless of the ceiling so a list call can't dump a huge
+// page into the model's context unless it asks for one.
+func paginationOptsMax(max int) []mcp.ToolOption {
 	return []mcp.ToolOption{
 		mcp.WithNumber("page",
 			mcp.Description("1-based page number"),
@@ -98,10 +109,10 @@ func paginationOpts() []mcp.ToolOption {
 			mcp.Min(1),
 		),
 		mcp.WithNumber("pageSize",
-			mcp.Description("Results per page (Hevy max is 10)"),
+			mcp.Description(fmt.Sprintf("Results per page (Hevy max is %d)", max)),
 			mcp.DefaultNumber(10),
 			mcp.Min(1),
-			mcp.Max(10),
+			mcp.Max(float64(max)),
 		),
 	}
 }
@@ -141,7 +152,7 @@ func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 		}))
 
 	s.AddTool(mcp.NewTool("hevy_update_workout",
-		mcp.WithDescription("Update an existing workout by ID. Returns Hevy's raw response body."+indexHint),
+		mcp.WithDescription("Update an existing workout by ID. The update replaces the whole workout, so send the complete exercise and set list — anything you leave out is gone. Note `is_private`: it is always sent, so a workout that was private becomes public unless you pass is_private=true (Hevy's read endpoints don't return the current value, so this tool cannot preserve it for you). Returns Hevy's raw response body."+indexHint),
 		mcp.WithInputSchema[updateWorkoutArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -213,7 +224,7 @@ func registerRoutines(s *server.MCPServer, factory ClientFactory) {
 		}))
 
 	s.AddTool(mcp.NewTool("hevy_update_routine",
-		mcp.WithDescription("Update an existing routine. Note: Hevy's update endpoint does not allow changing the routine's folder. Returns Hevy's raw response body."+indexHint),
+		mcp.WithDescription("Update an existing routine. The update replaces the routine's exercises wholesale, so send the full exercise list. Folder placement is left untouched unless you ask: set `folder_id` to move the routine into a folder, or `move_to_my_routines: true` to move it out into the default 'My Routines' list. Returns Hevy's raw response body."+indexHint),
 		mcp.WithInputSchema[updateRoutineArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -221,15 +232,22 @@ func registerRoutines(s *server.MCPServer, factory ClientFactory) {
 			if err := req.BindArguments(&args); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
+			body, err := args.Routine.wire()
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			path := "/v1/routines/" + args.ID
-			return rawResult(c.DoRaw("PUT", path, nil, &hevy.UpdateRoutineRequest{Routine: args.Routine}))
+			return rawResult(c.DoRaw("PUT", path, nil, &hevy.UpdateRoutineRequest{Routine: body}))
 		}))
 }
 
 func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
+	// This endpoint is the one exception to Hevy's 10-per-page limit: it
+	// documents and accepts pageSize up to 100 (verified against the live
+	// API 2026-10-19). Handy for walking the ~460-entry public catalog.
 	listOpts := append([]mcp.ToolOption{
-		mcp.WithDescription("List Hevy exercise templates (the catalog of exercises). Includes both built-in and user custom exercises."),
-	}, paginationOpts()...)
+		mcp.WithDescription("List Hevy exercise templates (the catalog of exercises). Includes both built-in and user custom exercises. Unlike the other list tools, pageSize goes up to 100 here."),
+	}, paginationOptsMax(100)...)
 	s.AddTool(mcp.NewTool("hevy_list_exercise_templates", listOpts...),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			page, size := pageArgs(req)
@@ -376,7 +394,7 @@ func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 		}))
 
 	s.AddTool(mcp.NewTool("hevy_create_body_measurement",
-		mcp.WithDescription("Create a body measurement entry for a given date. Returns Hevy's raw response body."),
+		mcp.WithDescription("Create a body measurement entry for a date that has none yet. Hevy returns HTTP 409 if an entry already exists for that date — use hevy_update_body_measurement to change an existing one. Returns Hevy's raw response body."),
 		mcp.WithInputSchema[createBodyMeasurementArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -400,7 +418,7 @@ func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 		}))
 
 	s.AddTool(mcp.NewTool("hevy_update_body_measurement",
-		mcp.WithDescription("Update a body measurement entry for a given date. Returns Hevy's raw response body."),
+		mcp.WithDescription("Update the body measurement entry for an existing date. Send only the metrics you want to change: Hevy's endpoint is a destructive full replace, so this tool reads the current row first and merges your fields over it. Clearing a metric is not possible through this tool. Use hevy_create_body_measurement for a date that has no entry yet. Returns Hevy's raw response body."),
 		mcp.WithInputSchema[updateBodyMeasurementArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -408,8 +426,24 @@ func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 			if err := req.BindArguments(&args); err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			path := "/v1/body_measurements/" + args.Date
-			return rawResult(c.DoRaw("PUT", path, nil, &args.Measurement))
+			path := "/v1/body_measurements/" + url.PathEscape(args.Date)
+
+			// Read-modify-write: PUT replaces the whole row and silently
+			// ignores unknown keys, so sending the caller's fields alone
+			// would wipe every metric they didn't mention.
+			current, err := c.DoRaw("GET", path, nil, nil)
+			if err != nil {
+				var apiErr *hevy.APIError
+				if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+					return mcp.NewToolResultError(fmt.Sprintf("no body measurement exists for %s, so there is nothing to merge into — use hevy_create_body_measurement to add one", args.Date)), nil
+				}
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			body, err := hevy.MergeBodyMeasurement(current, &args.Measurement)
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
+			return rawResult(c.DoRaw("PUT", path, nil, json.RawMessage(body)))
 		}))
 }
 

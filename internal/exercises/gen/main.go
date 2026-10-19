@@ -29,7 +29,10 @@ func main() {
 	all := []hevy.ExerciseTemplate{}
 
 	page := 1
-	const pageSize = 10
+	// /v1/exercise_templates is the one Hevy list endpoint that allows more
+	// than 10 per page — 100 is its documented (and live-verified) ceiling,
+	// which cuts the full-catalog walk from ~46 requests to 5.
+	const pageSize = 100
 	for {
 		log.Printf("fetching page %d", page)
 		resp, err := client.ListExerciseTemplates(page, pageSize)
@@ -40,6 +43,11 @@ func main() {
 			if t.IsCustom {
 				continue
 			}
+			// Thumbnails are ~110-character S3 URLs of no use to a model
+			// reading search results, and they'd add ~60KB to the embedded
+			// snapshot. Drop them; `equipment` is kept because it's a useful
+			// filter/disambiguator ("Bench Press (Barbell)" vs machine).
+			t.ThumbnailURL = ""
 			all = append(all, t)
 		}
 		if page >= resp.PageCount || len(resp.ExerciseTemplates) == 0 {

@@ -169,7 +169,7 @@ func (c *Client) ListBodyMeasurements(page, pageSize int) (*PaginatedBodyMeasure
 	return out, nil
 }
 
-func (c *Client) CreateBodyMeasurement(m *BodyMeasurement) error {
+func (c *Client) CreateBodyMeasurement(m *BodyMeasurementInput) error {
 	return c.do("POST", "/v1/body_measurements", nil, m, nil)
 }
 
@@ -181,7 +181,11 @@ func (c *Client) GetBodyMeasurement(date string) (*BodyMeasurement, error) {
 	return out, nil
 }
 
-func (c *Client) UpdateBodyMeasurement(date string, m *BodyMeasurement) error {
+// UpdateBodyMeasurement sends m as-is, which means Hevy clears every metric m
+// leaves unset — the endpoint is a full replace. Callers doing a partial
+// update must read the row first and pass the result of
+// MergeBodyMeasurement; the MCP tool does exactly that.
+func (c *Client) UpdateBodyMeasurement(date string, m *BodyMeasurementInput) error {
 	return c.do("PUT", "/v1/body_measurements/"+url.PathEscape(date), nil, m, nil)
 }
 

@@ -1,5 +1,13 @@
 package hevy
 
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strconv"
+)
+
 // Request types — what we POST/PUT to Hevy. These are deliberately separate
 // from the response types in models.go because Hevy rejects fields that are
 // output-only (`index`, exercise `title`, `created_at`, etc.) and uses
@@ -45,12 +53,37 @@ type RoutineCreateSet struct {
 }
 
 // RoutineUpdate is the routine sub-object inside PUT /v1/routines/{id}.
-// Hevy's PUT schema deliberately omits folder_id — folder placement is not
-// changed by update; use a separate flow if you need to move a routine.
+//
+// Hevy's PUT accepts `folder_id` and distinguishes three states (live-verified
+// 2026-10-19 by round-tripping a throwaway routine; the endpoint used to
+// reject the key outright with HTTP 400 "Unrecognized key(s)"):
+//
+//   - key absent          → placement unchanged
+//   - `"folder_id": N`    → routine moves into folder N
+//   - `"folder_id": null` → routine moves to the default "My Routines" list
+//
+// A `*int` can only express two of those — nil omits the key, so "move to My
+// Routines" would be unreachable — hence the raw message, set through
+// MoveToFolder / MoveToMyRoutines. Leave it nil to keep the current folder.
+//
+// This type is not model-facing: the update tool publishes its own schema that
+// splits the tri-state into two plain fields. See internal/tools/args.go.
 type RoutineUpdate struct {
 	Title     string                  `json:"title"`
 	Notes     string                  `json:"notes,omitempty"`
+	FolderID  json.RawMessage         `json:"folder_id,omitempty"`
 	Exercises []RoutineCreateExercise `json:"exercises"`
+}
+
+// MoveToFolder makes the update move the routine into folder id.
+func (r *RoutineUpdate) MoveToFolder(id int) {
+	r.FolderID = json.RawMessage(strconv.Itoa(id))
+}
+
+// MoveToMyRoutines makes the update move the routine out of whatever folder it
+// is in, into the default "My Routines" list.
+func (r *RoutineUpdate) MoveToMyRoutines() {
+	r.FolderID = json.RawMessage("null")
 }
 
 // CreateRoutineRequest is the body for POST /v1/routines.
@@ -78,7 +111,7 @@ type WorkoutPayload struct {
 	Description string                   `json:"description,omitempty"`
 	StartTime   string                   `json:"start_time"`
 	EndTime     string                   `json:"end_time"`
-	IsPrivate   bool                     `json:"is_private"`
+	IsPrivate   bool                     `json:"is_private" jsonschema:"Whether the workout is hidden from followers. Always sent, so on an update this overwrites the stored value: pass true to keep a private workout private. Hevy's read endpoints do not return the current value."`
 	Exercises   []WorkoutPayloadExercise `json:"exercises"`
 }
 
@@ -121,6 +154,88 @@ type CreateRoutineFolderRequest struct {
 // RoutineFolderCreate is the routine_folder sub-object on POST.
 type RoutineFolderCreate struct {
 	Title string `json:"title"`
+}
+
+// -- Body measurements -----------------------------------------------------
+
+// BodyMeasurementInput is the body for POST /v1/body_measurements and
+// PUT /v1/body_measurements/{date}.
+//
+// Separate from BodyMeasurement (the response type) because reads carry
+// server-owned `id` and `created_at`; echoing those back on a write is exactly
+// the kind of output-only leakage the rest of this file avoids.
+//
+// Every metric is *float64 + omitempty, so "not provided" is distinguishable
+// from a value — which is what makes MergeBodyMeasurement possible. The flip
+// side: there is no way to express "clear this field" through this type.
+type BodyMeasurementInput struct {
+	Date           string   `json:"date"`
+	WeightKg       *float64 `json:"weight_kg,omitempty"`
+	LeanMassKg     *float64 `json:"lean_mass_kg,omitempty"`
+	FatPercent     *float64 `json:"fat_percent,omitempty"`
+	NeckCm         *float64 `json:"neck_cm,omitempty"`
+	ShoulderCm     *float64 `json:"shoulder_cm,omitempty"`
+	ChestCm        *float64 `json:"chest_cm,omitempty"`
+	LeftBicepCm    *float64 `json:"left_bicep_cm,omitempty"`
+	RightBicepCm   *float64 `json:"right_bicep_cm,omitempty"`
+	LeftForearmCm  *float64 `json:"left_forearm_cm,omitempty"`
+	RightForearmCm *float64 `json:"right_forearm_cm,omitempty"`
+	Abdomen        *float64 `json:"abdomen,omitempty"`
+	Waist          *float64 `json:"waist,omitempty"`
+	Hips           *float64 `json:"hips,omitempty"`
+	LeftThigh      *float64 `json:"left_thigh,omitempty"`
+	RightThigh     *float64 `json:"right_thigh,omitempty"`
+	LeftCalf       *float64 `json:"left_calf,omitempty"`
+	RightCalf      *float64 `json:"right_calf,omitempty"`
+}
+
+// bodyMeasurementOutputOnlyKeys are server-owned fields that come back on
+// reads and must never be echoed into a write body.
+var bodyMeasurementOutputOnlyKeys = []string{"id", "created_at"}
+
+// MergeBodyMeasurement builds the body for PUT /v1/body_measurements/{date}
+// by overlaying the caller-provided fields in update onto the row as Hevy
+// currently has it.
+//
+// Why this exists: that PUT is a **full replace**, not a patch. Any metric
+// missing from the body is cleared server-side, and the endpoint *ignores*
+// unrecognized keys instead of rejecting them, so there is no error to notice
+// — a partial update silently destroys the rest of the row. (Learned the hard
+// way on 2026-10-19: a two-key PUT wiped a real row's weight, lean mass and
+// fat percentage.) Read-modify-write is the only safe shape.
+//
+// current is the raw GET response for that date. Working from the raw bytes
+// rather than a decoded struct means any field Hevy adds that we don't model
+// yet survives the round-trip instead of being dropped on the next update.
+func MergeBodyMeasurement(current []byte, update *BodyMeasurementInput) ([]byte, error) {
+	if update == nil {
+		return nil, errors.New("merge body measurement: nil update")
+	}
+
+	merged := map[string]json.RawMessage{}
+	if len(bytes.TrimSpace(current)) > 0 {
+		if err := json.Unmarshal(current, &merged); err != nil {
+			return nil, fmt.Errorf("merge body measurement: decode current row: %w", err)
+		}
+	}
+	for _, k := range bodyMeasurementOutputOnlyKeys {
+		delete(merged, k)
+	}
+
+	buf, err := json.Marshal(update)
+	if err != nil {
+		return nil, fmt.Errorf("merge body measurement: encode update: %w", err)
+	}
+	var provided map[string]json.RawMessage
+	if err := json.Unmarshal(buf, &provided); err != nil {
+		return nil, fmt.Errorf("merge body measurement: decode update: %w", err)
+	}
+	// omitempty means only the fields the caller actually set appear here.
+	for k, v := range provided {
+		merged[k] = v
+	}
+
+	return json.Marshal(merged)
 }
 
 // -- Exercise templates ----------------------------------------------------

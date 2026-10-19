@@ -19,12 +19,12 @@ import (
 // upstream pairs the registered MCP server with an httptest server standing in
 // for Hevy. Reused across all tool tests.
 type upstream struct {
-	t         *testing.T
-	server    *server.MCPServer
-	upstream  *httptest.Server
-	lastReq   *http.Request
-	lastBody  []byte
-	handler   func(w http.ResponseWriter, r *http.Request)
+	t        *testing.T
+	server   *server.MCPServer
+	upstream *httptest.Server
+	lastReq  *http.Request
+	lastBody []byte
+	handler  func(w http.ResponseWriter, r *http.Request)
 }
 
 func newUpstream(t *testing.T) *upstream {
@@ -744,4 +744,267 @@ func TestTools_AllRegistered(t *testing.T) {
 	for _, name := range expected {
 		assert.True(t, got[name], "tool %s should be registered", name)
 	}
+}
+
+// toolSchema pulls one tool's published JSON schema out of tools/list.
+func toolSchema(t *testing.T, u *upstream, name string) map[string]any {
+	t.Helper()
+	msg, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/list",
+	})
+	require.NoError(t, err)
+	resp := u.server.HandleMessage(context.Background(), msg)
+	jr, ok := resp.(mcp.JSONRPCResponse)
+	require.True(t, ok, "expected JSONRPCResponse, got %T", resp)
+
+	var tools []mcp.Tool
+	switch v := jr.Result.(type) {
+	case *mcp.ListToolsResult:
+		tools = v.Tools
+	case mcp.ListToolsResult:
+		tools = v.Tools
+	default:
+		t.Fatalf("expected ListToolsResult, got %T", jr.Result)
+	}
+	for _, tl := range tools {
+		if tl.Name != name {
+			continue
+		}
+		b, err := json.Marshal(tl)
+		require.NoError(t, err)
+		var schema map[string]any
+		require.NoError(t, json.Unmarshal(b, &schema))
+		return schema
+	}
+	t.Fatalf("tool %s not found", name)
+	return nil
+}
+
+func pageSizeMax(t *testing.T, u *upstream, tool string) float64 {
+	t.Helper()
+	schema := toolSchema(t, u, tool)
+	props, ok := schema["inputSchema"].(map[string]any)["properties"].(map[string]any)
+	require.True(t, ok, "no properties in %s schema", tool)
+	ps, ok := props["pageSize"].(map[string]any)
+	require.True(t, ok, "no pageSize in %s schema", tool)
+	max, ok := ps["maximum"].(float64)
+	require.True(t, ok, "no maximum on %s pageSize: %v", tool, ps)
+	return max
+}
+
+// /v1/exercise_templates allows pageSize up to 100 (every other Hevy list
+// endpoint caps at 10), so the templates tool must publish the higher ceiling
+// while the rest stay at 10.
+func TestTools_ExerciseTemplatesPageSizeCeilingIs100(t *testing.T) {
+	u := newUpstream(t)
+	assert.Equal(t, float64(100), pageSizeMax(t, u, "hevy_list_exercise_templates"))
+	assert.Equal(t, float64(10), pageSizeMax(t, u, "hevy_list_workouts"))
+	assert.Equal(t, float64(10), pageSizeMax(t, u, "hevy_list_routines"))
+	assert.Equal(t, float64(10), pageSizeMax(t, u, "hevy_list_routine_folders"))
+	assert.Equal(t, float64(10), pageSizeMax(t, u, "hevy_list_body_measurements"))
+}
+
+func TestTools_ListExerciseTemplates_ForwardsLargePageSize(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"page":1,"page_count":5,"exercise_templates":[]}`)
+
+	r := u.callTool("hevy_list_exercise_templates", map[string]any{"page": 1, "pageSize": 100})
+	assert.False(t, r.IsError)
+	assert.Equal(t, "/v1/exercise_templates", u.lastReq.URL.Path)
+	assert.Equal(t, "page=1&pageSize=100", u.lastReq.URL.RawQuery)
+}
+
+// Reads expose `equipment` and `thumbnail_url`; they must reach the model
+// rather than being dropped by our response struct.
+func TestTools_ListExerciseTemplates_KeepsEquipmentAndThumbnail(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"page":1,"page_count":1,"exercise_templates":[{"id":"e1","title":"Bench Press (Barbell)","type":"weight_reps","primary_muscle_group":"chest","equipment":"barbell","thumbnail_url":"https://example.invalid/bench.jpg"}]}`)
+
+	r := u.callTool("hevy_list_exercise_templates", nil)
+	assert.False(t, r.IsError)
+
+	var got hevy.PaginatedExerciseTemplates
+	require.NoError(t, json.Unmarshal([]byte(resultText(t, r)), &got))
+	require.Len(t, got.ExerciseTemplates, 1)
+	assert.Equal(t, hevy.EquipmentCategory("barbell"), got.ExerciseTemplates[0].Equipment)
+	assert.Equal(t, "https://example.invalid/bench.jpg", got.ExerciseTemplates[0].ThumbnailURL)
+}
+
+// The user info tool must surface the full response, not just id/name/url.
+func TestTools_GetUserInfo_IncludesUnitsAndProFlag(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"data":{"id":"u1","username":"alice","name":"Alice","url":"https://hevy.com/alice","weight_unit":"kg","distance_unit":"kilometers","is_pro":true}}`)
+
+	r := u.callTool("hevy_get_user_info", nil)
+	assert.False(t, r.IsError)
+
+	var got hevy.UserInfo
+	require.NoError(t, json.Unmarshal([]byte(resultText(t, r)), &got))
+	assert.Equal(t, "alice", got.Username)
+	assert.Equal(t, "kg", got.WeightUnit)
+	assert.Equal(t, "kilometers", got.DistanceUnit)
+	assert.True(t, got.IsPro)
+}
+
+// routineBody decodes the `routine` sub-object of the last captured PUT body.
+func routineBody(t *testing.T, u *upstream) map[string]any {
+	t.Helper()
+	var body struct {
+		Routine map[string]any `json:"routine"`
+	}
+	require.NoError(t, json.Unmarshal(u.lastBody, &body), "body: %s", u.lastBody)
+	require.NotNil(t, body.Routine, "no routine object in body: %s", u.lastBody)
+	return body.Routine
+}
+
+func updateRoutineArgsFor(extra map[string]any) map[string]any {
+	routine := map[string]any{
+		"title": "PPL",
+		"exercises": []any{map[string]any{
+			"exercise_template_id": "e1",
+			"sets":                 []any{map[string]any{"type": "normal", "reps": 10}},
+		}},
+	}
+	for k, v := range extra {
+		routine[k] = v
+	}
+	return map[string]any{"id": "r1", "routine": routine}
+}
+
+// Default behaviour: an update that says nothing about folders must not send
+// folder_id at all, which is how Hevy preserves the routine's placement.
+func TestTools_UpdateRoutine_OmitsFolderIDByDefault(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"routine":{"id":"r1"}}`)
+
+	r := u.callTool("hevy_update_routine", updateRoutineArgsFor(nil))
+	assert.False(t, r.IsError)
+	assert.Equal(t, "PUT", u.lastReq.Method)
+	assert.Equal(t, "/v1/routines/r1", u.lastReq.URL.Path)
+	_, present := routineBody(t, u)["folder_id"]
+	assert.False(t, present, "folder_id must be absent so Hevy keeps the current folder")
+}
+
+// folder_id moves the routine into that folder (Hevy accepts this on PUT as of
+// 2026-10-19; it used to 400).
+func TestTools_UpdateRoutine_ForwardsFolderID(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"routine":{"id":"r1"}}`)
+
+	r := u.callTool("hevy_update_routine", updateRoutineArgsFor(map[string]any{"folder_id": 3101367}))
+	assert.False(t, r.IsError)
+	assert.Equal(t, float64(3101367), routineBody(t, u)["folder_id"])
+}
+
+// move_to_my_routines must reach Hevy as an explicit null — the only way to
+// move a routine out of a folder.
+func TestTools_UpdateRoutine_MoveToMyRoutinesSendsNull(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"routine":{"id":"r1"}}`)
+
+	r := u.callTool("hevy_update_routine", updateRoutineArgsFor(map[string]any{"move_to_my_routines": true}))
+	assert.False(t, r.IsError)
+	body := routineBody(t, u)
+	val, present := body["folder_id"]
+	assert.True(t, present, "folder_id must be present as null, got body %s", u.lastBody)
+	assert.Nil(t, val)
+	_, leaked := body["move_to_my_routines"]
+	assert.False(t, leaked, "move_to_my_routines is a tool-level flag; Hevy rejects unrecognized keys")
+}
+
+// The two placement fields contradict each other; fail before touching Hevy
+// rather than guessing which one the model meant.
+func TestTools_UpdateRoutine_RejectsConflictingPlacement(t *testing.T) {
+	u := newUpstream(t)
+
+	r := u.callTool("hevy_update_routine", updateRoutineArgsFor(map[string]any{
+		"folder_id":           3101367,
+		"move_to_my_routines": true,
+	}))
+	assert.True(t, r.IsError)
+	assert.Contains(t, resultText(t, r), "mutually exclusive")
+	assert.Nil(t, u.lastReq, "no request should reach Hevy")
+}
+
+// The model can only use the placement fields if the published schema shows
+// them.
+func TestTools_UpdateRoutine_SchemaPublishesPlacementFields(t *testing.T) {
+	u := newUpstream(t)
+	schema := toolSchema(t, u, "hevy_update_routine")
+	props, ok := schema["inputSchema"].(map[string]any)["properties"].(map[string]any)["routine"].(map[string]any)["properties"].(map[string]any)
+	require.True(t, ok, "routine properties not found: %v", schema)
+	assert.Contains(t, props, "folder_id")
+	assert.Contains(t, props, "move_to_my_routines")
+}
+
+// Regression test for a real data loss: Hevy's PUT /v1/body_measurements/{date}
+// replaces the whole row and ignores unknown keys, so a partial update used to
+// silently wipe every metric the caller didn't mention. The tool must now
+// read-modify-write.
+func TestTools_UpdateBodyMeasurement_MergesInsteadOfClearing(t *testing.T) {
+	u := newUpstream(t)
+	var methods []string
+	u.handler = func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"id":73949311,"date":"2026-10-16","weight_kg":75.61,"lean_mass_kg":64.65,"fat_percent":14.5,"created_at":"2026-10-16T01:51:40.082Z"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}
+
+	r := u.callTool("hevy_update_body_measurement", map[string]any{
+		"date": "2026-10-16",
+		"measurement": map[string]any{
+			"date":      "2026-10-16",
+			"weight_kg": 76.2,
+		},
+	})
+	assert.False(t, r.IsError)
+	assert.Equal(t, []string{"GET", "PUT"}, methods, "must read the row before replacing it")
+	assert.Equal(t, "/v1/body_measurements/2026-10-16", u.lastReq.URL.Path)
+
+	var put map[string]any
+	require.NoError(t, json.Unmarshal(u.lastBody, &put), "body: %s", u.lastBody)
+	assert.Equal(t, 76.2, put["weight_kg"], "the caller's value must win")
+	assert.Equal(t, 64.65, put["lean_mass_kg"], "unmentioned metric must survive the update")
+	assert.Equal(t, 14.5, put["fat_percent"], "unmentioned metric must survive the update")
+	assert.NotContains(t, put, "id", "server-owned field must not be echoed back")
+	assert.NotContains(t, put, "created_at", "server-owned field must not be echoed back")
+}
+
+// Nothing to merge into means nothing to write — a blind PUT here would create
+// the illusion of an update while Hevy 404s, or worse.
+func TestTools_UpdateBodyMeasurement_MissingDateDoesNotWrite(t *testing.T) {
+	u := newUpstream(t)
+	var methods []string
+	u.handler = func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Body measurement not found"}`))
+	}
+
+	r := u.callTool("hevy_update_body_measurement", map[string]any{
+		"date":        "1990-01-01",
+		"measurement": map[string]any{"date": "1990-01-01", "weight_kg": 70},
+	})
+	assert.True(t, r.IsError)
+	assert.Contains(t, resultText(t, r), "hevy_create_body_measurement")
+	assert.Equal(t, []string{"GET"}, methods, "must not PUT when the row doesn't exist")
+}
+
+// The is_private hazard only reaches the model if the generated schema carries
+// its description: an update always sends the field, so a private workout
+// silently goes public unless the caller sets it, and Hevy's reads don't
+// return the current value for us to preserve.
+func TestTools_UpdateWorkout_SchemaWarnsAboutIsPrivate(t *testing.T) {
+	u := newUpstream(t)
+	schema := toolSchema(t, u, "hevy_update_workout")
+	props, ok := schema["inputSchema"].(map[string]any)["properties"].(map[string]any)["workout"].(map[string]any)["properties"].(map[string]any)
+	require.True(t, ok, "workout properties not found: %v", schema)
+	isPrivate, ok := props["is_private"].(map[string]any)
+	require.True(t, ok, "is_private not published: %v", props)
+	desc, _ := isPrivate["description"].(string)
+	assert.Contains(t, desc, "keep a private workout private", "is_private must carry its warning")
 }

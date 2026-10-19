@@ -23,6 +23,8 @@ Hevy's error: `"Invalid routine folder id: undefined"` when the field is missing
 - `*int` with `json:"folder_id"` — **no `omitempty`**. Nil pointer must serialize as `null`.
 - Pinned by `TestClient_CreateRoutine_FolderIDNilSerializesAsNull`.
 
+As of 2026-10-19 a POST with the key absent no longer reproduces that error (probed with a deliberately-invalid body, so validation-level evidence only). Keep sending explicit `null` anyway: it is what the spec documents, and it is unambiguous either way.
+
 ### Input and output shapes differ — keep them separate
 
 Reusing one struct for request and response is tempting but breaks. Hevy rejects fields that are output-only on input.
@@ -45,6 +47,8 @@ Go's `omitempty` treats the zero value as "empty". If a Hevy field is boolean an
 
 Same logic for any numeric field where `0` might be a real value, but in practice all Hevy numeric fields already use `*int` / `*float64`.
 
+**`workout.is_private` on an *update* overwrites the stored value.** Since the field is always sent, a PUT that doesn't set it publishes a previously-private workout — and Hevy's read endpoints don't return `is_private` at all (not in the spec's `Workout` schema, absent from live `GET /v1/workouts`), so the tool *cannot* read the current value and preserve it the way `hevy_update_body_measurement` merges. The only defence is telling the caller: `hevy_update_workout`'s description says so, and the warning is also attached to the field itself via a `jsonschema` tag so it appears in the published schema (pinned by `TestTools_UpdateWorkout_SchemaWarnsAboutIsPrivate`).
+
 **Exception: `workout.is_private` must always be sent.** Hevy rejects the request with `"workout.is_private" is required` if the field is missing — so `WorkoutPayload.IsPrivate` is a plain `bool` with no `omitempty`. Default zero value is `false` (public), matching the Hevy app default. Pinned by `TestTools_CreateWorkout_IsPrivateDefaultsToFalseWhenUnset` plus the `IsPrivateFalseSurvives` / `IsPrivateTrueSurvives` pair.
 
 ### Some GET responses are wrapped under a key
@@ -64,11 +68,68 @@ Hevy's OpenAPI spec says POST endpoints return the created object, but in practi
 
 For GET endpoints, `Client.doUnwrap(method, path, query, body, key, out)` tries `{"<key>": {...}}` first, falls back to bare. Use this for `GET /v1/routines/{id}` (documented wrapping), and apply it as a precaution to other single-resource GETs.
 
-### Routine UPDATE rejects `folder_id`
+### Routine UPDATE takes `folder_id` as a tri-state (changed 2026-10-19)
 
-Per Hevy spec, `PutRoutinesRequestBody.routine` does not include `folder_id`, and the live API enforces this: sending it in a PUT body returns `HTTP 400 {"error":"Unrecognized key(s) in object: 'folder_id'"}` (verified 2026-08-02 via raw PUT against `api.hevyapp.com`). The rejection is atomic — no partial write. Omitting `folder_id` from the PUT body preserves the routine's existing folder placement server-side; `folder_id` still appears in GET/PUT *response* bodies.
+**This reverses the old rule.** Until some point between 2026-08-02 and 2026-10-19, `PutRoutinesRequestBody.routine` had no `folder_id` and the live API rejected the key with `HTTP 400 {"error":"Unrecognized key(s) in object: 'folder_id'"}`. The spec now documents it (nullable) and the live API honours it. Re-verified 2026-10-19 by round-tripping a throwaway routine (`PUT` then `GET` to read back the authoritative value):
 
-Folder placement can't be changed through update — use a different flow if you need to move a routine. `RoutineUpdate` omits the field entirely (not `*int` + `omitempty`) so no caller can accidentally send it and 400 the whole update.
+| PUT body | Result |
+| --- | --- |
+| `folder_id` absent | placement unchanged |
+| `"folder_id": N` | routine moves into folder N |
+| `"folder_id": null` | routine moves to the default "My Routines" list |
+
+Two consequences for the types:
+
+- **`hevy.RoutineUpdate.FolderID` is a `json.RawMessage`**, set via `MoveToFolder(id)` / `MoveToMyRoutines()`, nil to keep placement. A `*int` cannot express all three states: nil serializes as an absent key, so "move to My Routines" would be unreachable. Don't "simplify" it back to `*int`.
+- **The model-facing schema is a separate type**, `tools.updateRoutinePayload`, which splits the tri-state into `folder_id` (integer) plus `move_to_my_routines` (bool) and rebuilds it in `wire()`. Reason: a reflected `*int` publishes `["null","integer"]`, so the model *can* send `null`, but `encoding/json` decodes that into a nil pointer — indistinguishable from omitted by the time our code sees it. The two fields are mutually exclusive; `wire()` errors out rather than guessing. `move_to_my_routines` must never reach Hevy (unrecognized keys 400 the request) — pinned by `TestTools_UpdateRoutine_MoveToMyRoutinesSendsNull`.
+
+Rejections are still atomic — a 400 means no partial write.
+
+### Exercise template reads carry `equipment` and `thumbnail_url`
+
+Both are output-only and absent from the create shape (which spells equipment
+`equipment_category`). Added to `ExerciseTemplate` 2026-10-19 after a spec
+re-check; before that they were silently dropped from every template read *and*
+from the embedded catalog, which is typed as `[]hevy.ExerciseTemplate`.
+
+The catalog generator (`internal/exercises/gen`) deliberately blanks
+`ThumbnailURL` before writing `catalog.json`: the URLs are ~110 chars of S3 path
+that no model needs in search results. `Equipment` is kept — it disambiguates
+titles like "Bench Press (Barbell)" vs the machine variant.
+
+### Exercise `type` on reads is a superset of the create enum
+
+Live catalog reads return `bodyweight_weighted`, `bodyweight_assisted`,
+`floors_duration` and `steps_duration`; the spec's `CustomExerciseType` (create
+input) accepts none of those, and offers `bodyweight_reps` /
+`bodyweight_assisted_reps`, which reads never return. Treat `ExerciseType` as an
+open string on the read side — don't validate reads against the create enum.
+
+### `GET /v1/user/info` returns seven fields
+
+`id`, `username`, `name`, `url`, `weight_unit`, `distance_unit`, `is_pro`. We
+modelled only the first, third and fourth until 2026-10-19. `IsPro` has no
+`omitempty` — `false` means "not a Pro subscriber" and must not vanish.
+
+### Body measurement reads include `id` and `created_at`
+
+Undocumented in the spec but present live. `BodyMeasurement` is currently shared
+between request and response, so adding them would need an input/output split
+per the rule below — not done yet, so those two fields are dropped on reads.
+
+### Body measurement UPDATE is a destructive full replace
+
+`PUT /v1/body_measurements/{date}` replaces the row: **every metric absent from the body is cleared**, and the endpoint *ignores* unrecognized keys instead of rejecting them, so it answers `HTTP 200` either way. There is no error to notice. Discovered 2026-10-19 the hard way — a two-key probe PUT wiped a real row's `weight_kg`, `lean_mass_kg` and `fat_percent` (restored from a read taken minutes earlier).
+
+Consequences:
+
+- `hevy_update_body_measurement` is **read-modify-write**: GET the row, `hevy.MergeBodyMeasurement(current, update)`, PUT the merged body. Pinned by `TestTools_UpdateBodyMeasurement_MergesInsteadOfClearing`. Never turn it back into a blind PUT.
+- The merge works from the **raw GET bytes**, not a decoded struct, so a field Hevy adds before we model it survives the round-trip instead of being erased by the next update.
+- A GET that 404s short-circuits with a message pointing at `hevy_create_body_measurement` — no write is attempted.
+- `hevy.Client.UpdateBodyMeasurement` still sends what you give it (replace semantics). It is test-only today; if you ever call it from a tool, merge first.
+- Clearing a metric is deliberately not expressible: `BodyMeasurementInput` uses `*float64` + `omitempty`, so nil means "leave alone". Needs an explicit mechanism if it ever comes up.
+
+Reads also carry server-owned `id` and `created_at` (neither in the spec). They live on `BodyMeasurement` (response) and are stripped by the merge; `BodyMeasurementInput` (request) must never grow them.
 
 ### Exercise template create returns `{"id": ...}` with ambiguous typing
 
@@ -79,7 +140,7 @@ The spec says integer; real catalog uses hex strings like `"05293BCA"`. `flexibl
 - Tool definitions use **`mcp.WithInputSchema[T]()`** for create/update tools — it reflects on a Go struct (request type) and emits a precise JSON schema. The model needs this to populate fields like `folder_id` it would otherwise have to guess.
 - Simple read tools use explicit `mcp.WithString`/`mcp.WithNumber` etc. — keep them flat; no need to reach for typed schema for one-field tools.
 - Tool **error semantics**: API errors are surfaced as `mcp.NewToolResultError(...)` (tool result with `IsError=true`), not as transport-level errors. The model can read the message and try again. Reserve transport errors for genuinely broken requests.
-- Pagination: every list tool exposes `page` (default 1) and `pageSize` (default 10, max 10 — Hevy's limit). The model controls paging so Hevy traffic stays bounded; never auto-walk all pages.
+- Pagination: every list tool exposes `page` (default 1) and `pageSize` (default 10). The max is 10 — Hevy's limit — **except `/v1/exercise_templates`, which allows 100** (spec default *is* 100; live-verified 2026-10-19). `paginationOpts()` emits the 10 ceiling, `paginationOptsMax(100)` the templates one; the default stays 10 everywhere so a list call can't dump a huge page into context unasked. The model controls paging so Hevy traffic stays bounded; never auto-walk all pages.
 
 ## Authentication
 
@@ -124,5 +185,8 @@ Things to remember when touching build/deploy code:
 
 - **API behavior questions**: the Hevy OpenAPI spec lives at `https://api.hevyapp.com/docs`. It's served as Swagger UI; the JSON spec is embedded in `swagger-ui-init.js` as a `swaggerDoc` object. Brace-match it out, parse, inspect. The user has confirmed the spec is mostly accurate, but POST response shapes drift — trust the raw-bytes pattern over the spec.
 - **Don't trust the spec for POST response shapes.** Trust user reports + `DoRaw` round-trips.
+- **Probing what Hevy accepts without writing: only where rejection is proven.** On `/v1/routines` and `/v1/workouts`, Hevy validates the whole body, concatenates all complaints into one `error` string, and rejects atomically — so a request carrying a *deliberate* fatal error (`"exercises": []` → `"Array must contain at least 1 element(s)"`) can never write, yet still reports whether the key under test is tolerated. A junk key (`"zzz_bogus": 1`) is the required control: `Unrecognized key(s) in object: 'zzz_bogus'` proves the unrecognized-key check ran in that same response.
+  **This technique is endpoint-specific and has already destroyed data.** `PUT /v1/body_measurements/{date}` ignores unknown keys and returns `HTTP 200`, so the "safe" probe was a successful destructive write (2026-10-19). Before probing a write endpoint, establish that it *does* reject unknown keys — on a resource you can afford to lose. Treat any endpoint whose rejection behaviour is unverified as write-unsafe, and **ask the user first**: Hevy has **no DELETE endpoints**, so neither throwaway objects nor mistakes can be cleaned up afterwards.
+  Validation-level evidence never settles write *semantics* (does the field actually change anything?) — that needs a real round-trip plus a read-back, on a throwaway resource, with the user's go-ahead.
 - **Don't add `omitempty` to anything where the zero value carries meaning** (`false`, `0`, empty string for required fields).
 - **Don't merge input and output types.** It will appear to work until Hevy rejects a stray `title` or `index`.
