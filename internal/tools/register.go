@@ -117,9 +117,47 @@ func paginationOptsMax(max int) []mcp.ToolOption {
 	}
 }
 
+// Tool annotations. mcp.NewTool defaults every tool to readOnlyHint=false and
+// destructiveHint=true, so unless a tool says otherwise clients like claude.ai
+// file it under "write/delete" — reads included. Every tool must carry one of
+// these (pinned by TestTools_AnnotationsMatchToolKind).
+var (
+	// readsHevy: a GET against the Hevy API.
+	readsHevy = mcp.WithToolAnnotation(mcp.ToolAnnotation{
+		ReadOnlyHint:    mcp.ToBoolPtr(true),
+		DestructiveHint: mcp.ToBoolPtr(false),
+		IdempotentHint:  mcp.ToBoolPtr(true),
+		OpenWorldHint:   mcp.ToBoolPtr(true),
+	})
+	// readsCatalog: a lookup in the embedded catalog; no network at all.
+	readsCatalog = mcp.WithToolAnnotation(mcp.ToolAnnotation{
+		ReadOnlyHint:    mcp.ToBoolPtr(true),
+		DestructiveHint: mcp.ToBoolPtr(false),
+		IdempotentHint:  mcp.ToBoolPtr(true),
+		OpenWorldHint:   mcp.ToBoolPtr(false),
+	})
+	// createsInHevy: a POST. Additive, but each call makes another object,
+	// and Hevy has no DELETE endpoints to undo it.
+	createsInHevy = mcp.WithToolAnnotation(mcp.ToolAnnotation{
+		ReadOnlyHint:    mcp.ToBoolPtr(false),
+		DestructiveHint: mcp.ToBoolPtr(false),
+		IdempotentHint:  mcp.ToBoolPtr(false),
+		OpenWorldHint:   mcp.ToBoolPtr(true),
+	})
+	// overwritesInHevy: a PUT. Stored values are replaced (even the merging
+	// body-measurement update overwrites the metrics it is given).
+	overwritesInHevy = mcp.WithToolAnnotation(mcp.ToolAnnotation{
+		ReadOnlyHint:    mcp.ToBoolPtr(false),
+		DestructiveHint: mcp.ToBoolPtr(true),
+		IdempotentHint:  mcp.ToBoolPtr(true),
+		OpenWorldHint:   mcp.ToBoolPtr(true),
+	})
+)
+
 func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 	listOpts := append([]mcp.ToolOption{
 		mcp.WithDescription("List the authenticated user's completed workouts, ordered by start time descending. Use page/pageSize to paginate."),
+		readsHevy,
 	}, paginationOpts()...)
 	s.AddTool(mcp.NewTool("hevy_list_workouts", listOpts...),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -129,6 +167,7 @@ func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_create_workout",
 		mcp.WithDescription("Create a new completed workout. Returns Hevy's raw response body."+indexHint),
+		createsInHevy,
 		mcp.WithInputSchema[createWorkoutArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -141,6 +180,7 @@ func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_get_workout",
 		mcp.WithDescription("Get a single workout by ID."),
+		readsHevy,
 		mcp.WithString("id", mcp.Required(), mcp.Description("Workout ID (UUID).")),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -153,6 +193,7 @@ func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_update_workout",
 		mcp.WithDescription("Update an existing workout by ID. The update replaces the whole workout, so send the complete exercise and set list — anything you leave out is gone. Note `is_private`: it is always sent, so a workout that was private becomes public unless you pass is_private=true (Hevy's read endpoints don't return the current value, so this tool cannot preserve it for you). Returns Hevy's raw response body."+indexHint),
+		overwritesInHevy,
 		mcp.WithInputSchema[updateWorkoutArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -166,6 +207,7 @@ func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_get_workout_count",
 		mcp.WithDescription("Return the total number of workouts logged by the authenticated user."),
+		readsHevy,
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			n, err := c.GetWorkoutCount()
@@ -177,6 +219,7 @@ func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 
 	eventOpts := append([]mcp.ToolOption{
 		mcp.WithDescription("List workout updated/deleted events, useful for incremental sync. `since` is an ISO 8601 timestamp to filter from."),
+		readsHevy,
 		mcp.WithString("since",
 			mcp.Description("ISO 8601 timestamp; only events at or after this time are returned."),
 		),
@@ -192,6 +235,7 @@ func registerWorkouts(s *server.MCPServer, factory ClientFactory) {
 func registerRoutines(s *server.MCPServer, factory ClientFactory) {
 	listOpts := append([]mcp.ToolOption{
 		mcp.WithDescription("List the authenticated user's routines (workout templates)."),
+		readsHevy,
 	}, paginationOpts()...)
 	s.AddTool(mcp.NewTool("hevy_list_routines", listOpts...),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -201,6 +245,7 @@ func registerRoutines(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_create_routine",
 		mcp.WithDescription("Create a new routine. Set `folder_id` to place the routine in a folder, or null to use the default 'My Routines' folder. Returns Hevy's raw response body."+indexHint),
+		createsInHevy,
 		mcp.WithInputSchema[createRoutineArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -213,6 +258,7 @@ func registerRoutines(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_get_routine",
 		mcp.WithDescription("Get a single routine by ID."),
+		readsHevy,
 		mcp.WithString("id", mcp.Required(), mcp.Description("Routine ID.")),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -225,6 +271,7 @@ func registerRoutines(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_update_routine",
 		mcp.WithDescription("Update an existing routine. The update replaces the routine's exercises wholesale, so send the full exercise list. Folder placement is left untouched unless you ask: set `folder_id` to move the routine into a folder, or `move_to_my_routines: true` to move it out into the default 'My Routines' list. Returns Hevy's raw response body."+indexHint),
+		overwritesInHevy,
 		mcp.WithInputSchema[updateRoutineArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -247,6 +294,7 @@ func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
 	// API 2026-10-19). Handy for walking the ~460-entry public catalog.
 	listOpts := append([]mcp.ToolOption{
 		mcp.WithDescription("List Hevy exercise templates (the catalog of exercises). Includes both built-in and user custom exercises. Unlike the other list tools, pageSize goes up to 100 here."),
+		readsHevy,
 	}, paginationOptsMax(100)...)
 	s.AddTool(mcp.NewTool("hevy_list_exercise_templates", listOpts...),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -256,6 +304,7 @@ func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_create_exercise_template",
 		mcp.WithDescription("Create a custom exercise template. Returns Hevy's raw response body."),
+		createsInHevy,
 		mcp.WithInputSchema[createExerciseTemplateArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -268,6 +317,7 @@ func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_get_exercise_template",
 		mcp.WithDescription("Get a single exercise template by ID."),
+		readsHevy,
 		mcp.WithString("id", mcp.Required(), mcp.Description("Exercise template ID.")),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -292,6 +342,7 @@ func registerExerciseSearch(s *server.MCPServer) {
 	}
 	s.AddTool(mcp.NewTool("hevy_search_exercise_templates",
 		mcp.WithDescription("Search the built-in Hevy exercise-template catalog (public exercises only, no round-trip). Filter by title substring, muscle group, or exercise type. Custom user-created exercises are not indexed — use hevy_list_exercise_templates for those."),
+		readsCatalog,
 		mcp.WithString("query",
 			mcp.Description("Case-insensitive substring match on exercise title (e.g. 'squat', 'pendlay').")),
 		mcp.WithString("muscle_group",
@@ -327,6 +378,7 @@ func registerExerciseSearch(s *server.MCPServer) {
 func registerRoutineFolders(s *server.MCPServer, factory ClientFactory) {
 	listOpts := append([]mcp.ToolOption{
 		mcp.WithDescription("List routine folders for organizing routines."),
+		readsHevy,
 	}, paginationOpts()...)
 	s.AddTool(mcp.NewTool("hevy_list_routine_folders", listOpts...),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -336,6 +388,7 @@ func registerRoutineFolders(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_create_routine_folder",
 		mcp.WithDescription("Create a routine folder. Returns Hevy's raw response body."),
+		createsInHevy,
 		mcp.WithString("title", mcp.Required(), mcp.Description("Folder title.")),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -349,6 +402,7 @@ func registerRoutineFolders(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_get_routine_folder",
 		mcp.WithDescription("Get a single routine folder by numeric ID."),
+		readsHevy,
 		mcp.WithNumber("id", mcp.Required(), mcp.Description("Folder ID (integer).")),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -363,6 +417,7 @@ func registerRoutineFolders(s *server.MCPServer, factory ClientFactory) {
 func registerExerciseHistory(s *server.MCPServer, factory ClientFactory) {
 	s.AddTool(mcp.NewTool("hevy_get_exercise_history",
 		mcp.WithDescription("Get historical set data for one exercise template, optionally bounded by start_date / end_date (ISO 8601). Returns Hevy's raw response body."),
+		readsHevy,
 		mcp.WithString("id", mcp.Required(), mcp.Description("Exercise template ID.")),
 		mcp.WithString("start_date", mcp.Description("Inclusive lower bound (ISO 8601, e.g. 2024-01-01).")),
 		mcp.WithString("end_date", mcp.Description("Inclusive upper bound (ISO 8601).")),
@@ -386,6 +441,7 @@ func registerExerciseHistory(s *server.MCPServer, factory ClientFactory) {
 func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 	listOpts := append([]mcp.ToolOption{
 		mcp.WithDescription("List logged body measurements."),
+		readsHevy,
 	}, paginationOpts()...)
 	s.AddTool(mcp.NewTool("hevy_list_body_measurements", listOpts...),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -395,6 +451,7 @@ func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_create_body_measurement",
 		mcp.WithDescription("Create a body measurement entry for a date that has none yet. Hevy returns HTTP 409 if an entry already exists for that date — use hevy_update_body_measurement to change an existing one. Returns Hevy's raw response body."),
+		createsInHevy,
 		mcp.WithInputSchema[createBodyMeasurementArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -407,6 +464,7 @@ func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_get_body_measurement",
 		mcp.WithDescription("Get a body measurement by date (YYYY-MM-DD)."),
+		readsHevy,
 		mcp.WithString("date", mcp.Required(), mcp.Description("Date in YYYY-MM-DD.")),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -419,6 +477,7 @@ func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 
 	s.AddTool(mcp.NewTool("hevy_update_body_measurement",
 		mcp.WithDescription("Update the body measurement entry for an existing date. Send only the metrics you want to change: Hevy's endpoint is a destructive full replace, so this tool reads the current row first and merges your fields over it. Clearing a metric is not possible through this tool. Use hevy_create_body_measurement for a date that has no entry yet. Returns Hevy's raw response body."),
+		overwritesInHevy,
 		mcp.WithInputSchema[updateBodyMeasurementArgs](),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -450,6 +509,7 @@ func registerBodyMeasurements(s *server.MCPServer, factory ClientFactory) {
 func registerUser(s *server.MCPServer, factory ClientFactory) {
 	s.AddTool(mcp.NewTool("hevy_get_user_info",
 		mcp.WithDescription("Return profile information about the authenticated Hevy user."),
+		readsHevy,
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			return hevyResult(c.GetUserInfo())

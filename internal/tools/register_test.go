@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -1007,4 +1008,50 @@ func TestTools_UpdateWorkout_SchemaWarnsAboutIsPrivate(t *testing.T) {
 	require.True(t, ok, "is_private not published: %v", props)
 	desc, _ := isPrivate["description"].(string)
 	assert.Contains(t, desc, "keep a private workout private", "is_private must carry its warning")
+}
+
+// mcp.NewTool defaults to readOnlyHint=false, destructiveHint=true, which made
+// claude.ai list every tool — reads included — as "write/delete". Each tool
+// must state its kind explicitly.
+func TestTools_AnnotationsMatchToolKind(t *testing.T) {
+	seedCatalog(t, []hevy.ExerciseTemplate{
+		{ID: "AAA", Title: "Squat", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
+	})
+	u := newUpstream(t)
+
+	msg, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	require.NoError(t, err)
+	jr, ok := u.server.HandleMessage(context.Background(), msg).(mcp.JSONRPCResponse)
+	require.True(t, ok)
+	var tools []mcp.Tool
+	switch v := jr.Result.(type) {
+	case *mcp.ListToolsResult:
+		tools = v.Tools
+	case mcp.ListToolsResult:
+		tools = v.Tools
+	default:
+		t.Fatalf("expected ListToolsResult, got %T", jr.Result)
+	}
+	require.Len(t, tools, 23)
+
+	for _, tl := range tools {
+		a := tl.Annotations
+		require.NotNil(t, a.ReadOnlyHint, tl.Name)
+		require.NotNil(t, a.DestructiveHint, tl.Name)
+		switch {
+		case strings.HasPrefix(tl.Name, "hevy_get_"),
+			strings.HasPrefix(tl.Name, "hevy_list_"),
+			strings.HasPrefix(tl.Name, "hevy_search_"):
+			assert.True(t, *a.ReadOnlyHint, "%s should be read-only", tl.Name)
+			assert.False(t, *a.DestructiveHint, "%s should not be destructive", tl.Name)
+		case strings.HasPrefix(tl.Name, "hevy_create_"):
+			assert.False(t, *a.ReadOnlyHint, "%s writes", tl.Name)
+			assert.False(t, *a.DestructiveHint, "%s is additive", tl.Name)
+		case strings.HasPrefix(tl.Name, "hevy_update_"):
+			assert.False(t, *a.ReadOnlyHint, "%s writes", tl.Name)
+			assert.True(t, *a.DestructiveHint, "%s overwrites stored values", tl.Name)
+		default:
+			t.Errorf("tool %s has no expected annotation kind; extend this test", tl.Name)
+		}
+	}
 }
