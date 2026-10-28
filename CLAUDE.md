@@ -104,6 +104,16 @@ input) accepts none of those, and offers `bodyweight_reps` /
 `bodyweight_assisted_reps`, which reads never return. Treat `ExerciseType` as an
 open string on the read side — don't validate reads against the create enum.
 
+### Muscle groups: published as an enum, not enforced
+
+`hevy.MuscleGroups` is the spec's `MuscleGroup` enum (20 values, copied
+2026-10-28) and is the `muscle_group` enum on `hevy_search_exercise_templates`.
+mcp-go doesn't validate enums, so an off-list value still runs; when it yields
+zero matches the response `note` names the valid values. It is deliberately
+*not* rejected: unlike exercise type, nobody has checked that live reads stay
+within the spec's muscle list, and a hard reject would make any extra group
+unsearchable.
+
 ### `GET /v1/user/info` returns seven fields
 
 `id`, `username`, `name`, `url`, `weight_unit`, `distance_unit`, `is_pro`. We
@@ -141,7 +151,7 @@ The spec says integer; real catalog uses hex strings like `"05293BCA"`. `flexibl
 - **Every tool carries an annotation option** (`readsHevy`, `createsInHevy`, `overwritesInHevy` in `register.go`). `mcp.NewTool` defaults to `readOnlyHint=false, destructiveHint=true`, and claude.ai files any tool with those defaults under "Write/Delete tools", reads included. Pinned by `TestTools_AnnotationsMatchToolKind`, which fails for any new tool name it doesn't recognise.
 - Tool **error semantics**: API errors are surfaced as `mcp.NewToolResultError(...)` (tool result with `IsError=true`), not as transport-level errors. The model can read the message and try again. Reserve transport errors for genuinely broken requests.
 - Pagination: every list tool exposes `page` (default 1) and `pageSize` (default 10). The max is 10 — Hevy's limit — **except `/v1/exercise_templates`, which allows 100** (spec default *is* 100; live-verified 2026-10-19). `paginationOpts()` emits the 10 ceiling, `paginationOptsMax(100)` the templates one; the default stays 10 everywhere so a list call can't dump a huge page into context unasked. The model controls paging so Hevy traffic stays bounded; never auto-walk all pages.
-- **The one auto-walk: `hevy_search_exercise_templates`.** It pages `/v1/exercise_templates` at 100 per page (~5 requests for the ~460-entry catalog), filters server-side, and returns only matches. It stops as soon as `limit` matches are found and is hard-capped at `maxPages` (20) whatever `page_count` says. Any page error fails the whole search — a partial result would read as "no such exercise". This replaced an embedded build-time catalog snapshot (2026-10-28); there is no `go generate` step or `hevy_key` build secret any more.
+- **The one auto-walk: `hevy_search_exercise_templates`.** It pages `/v1/exercise_templates` at 100 per page (~5 requests for the ~460-entry catalog), filters server-side, and returns only matches. It always scans to the end (hard-capped at `maxPages` = 20 whatever `page_count` says) so it can report an exact `total`; `offset`/`limit` then page over the *matches*, and every call rescans. That total, plus `next_offset` and a plain-words `note` serialized *before* the list, is the deliberate nudge to keep paging: with only a `truncated: true` flag, Claude Web settled for the first 20 matches (2026-10-28). Don't trade it back for early-stop. Any page error fails the whole search — a partial result would read as "no such exercise". This replaced an embedded build-time catalog snapshot (2026-10-28); there is no `go generate` step or `hevy_key` build secret any more.
 
 ## Authentication
 

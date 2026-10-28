@@ -110,7 +110,7 @@ Rotating either OAuth secret invalidates every outstanding access token; users m
 | Body measurements | `list_body_measurements`, `create_body_measurement`, `get_body_measurement`, `update_body_measurement` |
 | User | `get_user_info` |
 
-`search_exercise_templates` pages through Hevy's live exercise-template catalog (100 per page, ~5 requests) and filters server-side by title substring, muscle group, or exercise type, returning only the matches. Both built-in and the user's custom exercises are searched; it stops paging as soon as `limit` matches are found.
+`search_exercise_templates` pages through Hevy's live exercise-template catalog (100 per page, ~5 requests) and filters server-side by title substring, muscle group, or exercise type, returning only the matches. Both built-in and the user's custom exercises are searched. Results are paged with `offset`/`limit`; each response reports the exact `total` and, when more remain, a `next_offset` and a note telling the model to keep going.
 
 Schemas for create/update tools are derived from the Hevy OpenAPI spec, so the model sees field-level structure (e.g. `folder_id`, set types, rep ranges) rather than free-form objects.
 

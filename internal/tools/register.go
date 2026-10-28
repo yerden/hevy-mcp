@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -322,47 +324,96 @@ func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
 		}))
 }
 
+// searchResult is the hevy_search_exercise_templates response. Field order is
+// deliberate: the totals and the "there's more" note come before the list, so
+// a model reads how much it is *not* seeing before it reads the matches.
+// Claude Web, given only `truncated: true`, settled for the first page.
+type searchResult struct {
+	Total             int                     `json:"total"`
+	Offset            int                     `json:"offset"`
+	Count             int                     `json:"count"`
+	NextOffset        *int                    `json:"next_offset,omitempty"`
+	Note              string                  `json:"note,omitempty"`
+	ExerciseTemplates []hevy.ExerciseTemplate `json:"exercise_templates"`
+}
+
+// pageSearchResult slices one window out of all matches and spells out, in
+// words, how to fetch whatever lies beyond it.
+func pageSearchResult(all []hevy.ExerciseTemplate, offset, limit int) searchResult {
+	res := searchResult{Total: len(all), Offset: offset, ExerciseTemplates: []hevy.ExerciseTemplate{}}
+	if offset >= len(all) {
+		if len(all) > 0 {
+			res.Note = fmt.Sprintf("offset %d is past the last of %d matches.", offset, len(all))
+		}
+		return res
+	}
+	end := min(offset+limit, len(all))
+	res.ExerciseTemplates = all[offset:end]
+	res.Count = len(res.ExerciseTemplates)
+	if end < len(all) {
+		res.NextOffset = &end
+		res.Note = fmt.Sprintf("Showing %d-%d of %d matches; %d more not shown. "+
+			"Call hevy_search_exercise_templates again with the same filters and offset=%d "+
+			"before concluding an exercise is missing, or narrow the filters.",
+			offset+1, end, len(all), len(all)-end, end)
+	}
+	return res
+}
+
 // registerExerciseSearch adds a search tool over Hevy's exercise-template
 // catalog. Each call pages through /v1/exercise_templates (100 per page, ~5
 // requests for the full catalog) and filters server-side, so only the matches
-// reach the model's context.
+// reach the model's context. offset/limit page over the matches, not Hevy's
+// pages: every call rescans, which is what makes `total` exact.
 func registerExerciseSearch(s *server.MCPServer, factory ClientFactory) {
 	s.AddTool(mcp.NewTool("hevy_search_exercise_templates",
-		mcp.WithDescription("Search Hevy exercise templates — built-in and the user's custom ones — by title substring, muscle group, or exercise type. Filtering happens server-side, so prefer this over paging hevy_list_exercise_templates to find an exercise. `truncated: true` means the limit was hit and more matches may exist."),
+		mcp.WithDescription("Search Hevy exercise templates — built-in and the user's custom ones — by title substring, muscle group, or exercise type. Filtering happens server-side, so prefer this over paging hevy_list_exercise_templates to find an exercise. Results are paged: `total` is the number of matches across all pages, and when `next_offset` is present there are more — call again with that offset (same filters) to see them. Don't conclude an exercise doesn't exist until you have seen all `total` matches or narrowed the filters."),
 		readsHevy,
 		mcp.WithString("query",
 			mcp.Description("Case-insensitive substring match on exercise title (e.g. 'squat', 'pendlay').")),
 		mcp.WithString("muscle_group",
-			mcp.Description("Match against Hevy's muscle-group enum (e.g. chest, lats, quadriceps, biceps, cardio). Matches primary OR secondary by default; set muscle_group_primary_only=true to restrict to the primary.")),
+			mcp.Description("Hevy muscle group. Matches primary OR secondary by default; set muscle_group_primary_only=true to restrict to the primary."),
+			mcp.Enum(hevy.MuscleGroups...)),
 		mcp.WithBoolean("muscle_group_primary_only",
 			mcp.Description("When true, muscle_group only matches an exercise's primary muscle group. Ignored when muscle_group is unset."),
 			mcp.DefaultBool(false),
 		),
 		mcp.WithString("exercise_type",
 			mcp.Description("Match against Hevy's exercise-type enum (e.g. weight_reps, reps_only, duration, distance_duration, bodyweight_weighted, bodyweight_assisted).")),
+		mcp.WithNumber("offset",
+			mcp.Description("Number of matches to skip. Pass the previous response's `next_offset` to get the next page."),
+			mcp.DefaultNumber(0),
+			mcp.Min(0),
+		),
 		mcp.WithNumber("limit",
-			mcp.Description("Max results to return."),
+			mcp.Description("Max results per page."),
 			mcp.DefaultNumber(20),
 			mcp.Min(1),
 			mcp.Max(200),
 		),
 	),
 		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			res, err := exercises.Search(c, exercises.SearchParams{
+			mg := req.GetString("muscle_group", "")
+			all, err := exercises.Search(c, exercises.SearchParams{
 				Query:                  req.GetString("query", ""),
-				MuscleGroup:            req.GetString("muscle_group", ""),
+				MuscleGroup:            mg,
 				MuscleGroupPrimaryOnly: req.GetBool("muscle_group_primary_only", false),
 				ExerciseType:           req.GetString("exercise_type", ""),
-				Limit:                  req.GetInt("limit", 20),
 			})
 			if err != nil {
 				return mcp.NewToolResultError(err.Error()), nil
 			}
-			return jsonResult(map[string]any{
-				"count":              len(res.Templates),
-				"truncated":          res.Truncated,
-				"exercise_templates": res.Templates,
-			})
+			offset := max(req.GetInt("offset", 0), 0)
+			limit := min(max(req.GetInt("limit", 20), 1), 200)
+			res := pageSearchResult(all, offset, limit)
+			// mcp-go doesn't enforce the enum, and a near-miss ("quads")
+			// otherwise reads as "no such exercise". Only explained, never
+			// rejected: live data could use a group the spec doesn't list.
+			if res.Total == 0 && mg != "" && !slices.Contains(hevy.MuscleGroups, strings.ToLower(strings.TrimSpace(mg))) {
+				res.Note = fmt.Sprintf("%q is not a Hevy muscle group, so nothing matched. Valid values: %s.",
+					mg, strings.Join(hevy.MuscleGroups, ", "))
+			}
+			return jsonResult(res)
 		}))
 }
 

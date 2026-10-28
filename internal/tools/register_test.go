@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -509,19 +510,103 @@ func TestTools_SearchExerciseTemplates_PagesLiveCatalogAndFilters(t *testing.T) 
 	require.False(t, r.IsError, resultText(t, r))
 	assert.Equal(t, []string{"1", "2"}, pages)
 
-	var got struct {
-		Count             int                     `json:"count"`
-		Truncated         bool                    `json:"truncated"`
-		ExerciseTemplates []hevy.ExerciseTemplate `json:"exercise_templates"`
-	}
+	var got searchResult
 	require.NoError(t, json.Unmarshal([]byte(resultText(t, r)), &got))
+	assert.Equal(t, 2, got.Total)
 	assert.Equal(t, 2, got.Count)
-	assert.False(t, got.Truncated)
+	assert.Nil(t, got.NextOffset, "everything fit on one page")
+	assert.Empty(t, got.Note)
 	require.Len(t, got.ExerciseTemplates, 2)
 	assert.Equal(t, "AAA", got.ExerciseTemplates[0].ID)
 	assert.Empty(t, got.ExerciseTemplates[0].ThumbnailURL, "thumbnails are stripped from search results")
 	assert.Equal(t, "c-1", got.ExerciseTemplates[1].ID)
 	assert.True(t, got.ExerciseTemplates[1].IsCustom)
+}
+
+// Claude Web took the first 20 of a bigger result set and stopped. When more
+// matches exist the response must say how many, and exactly how to get them.
+func TestTools_SearchExerciseTemplates_PagesOverMatchesWithNextOffset(t *testing.T) {
+	u := newUpstream(t)
+	var rows []string
+	for i := 0; i < 47; i++ {
+		rows = append(rows, fmt.Sprintf(`{"id":"S%02d","title":"Squat %d","type":"weight_reps","primary_muscle_group":"quadriceps"}`, i, i))
+	}
+	u.reply(200, `{"page":1,"page_count":1,"exercise_templates":[`+strings.Join(rows, ",")+`]}`)
+
+	call := func(args map[string]any) searchResult {
+		t.Helper()
+		r := u.callTool("hevy_search_exercise_templates", args)
+		require.False(t, r.IsError, resultText(t, r))
+		var got searchResult
+		require.NoError(t, json.Unmarshal([]byte(resultText(t, r)), &got))
+		return got
+	}
+
+	first := call(map[string]any{"query": "squat"})
+	assert.Equal(t, 47, first.Total)
+	assert.Equal(t, 20, first.Count)
+	require.NotNil(t, first.NextOffset)
+	assert.Equal(t, 20, *first.NextOffset)
+	assert.Contains(t, first.Note, "of 47 matches")
+	assert.Contains(t, first.Note, "offset=20")
+
+	last := call(map[string]any{"query": "squat", "offset": 40})
+	assert.Equal(t, 7, last.Count)
+	assert.Equal(t, "S40", last.ExerciseTemplates[0].ID)
+	assert.Nil(t, last.NextOffset, "no next page after the last")
+	assert.Empty(t, last.Note)
+
+	past := call(map[string]any{"query": "squat", "offset": 100})
+	assert.Equal(t, 0, past.Count)
+	assert.NotNil(t, past.ExerciseTemplates, "must marshal as [], not null")
+	assert.Contains(t, past.Note, "past the last of 47")
+}
+
+// The totals and the "more" note must precede the list in the serialized
+// response, so a model meets them before a long run of templates.
+func TestTools_SearchExerciseTemplates_NoteComesBeforeList(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"page":1,"page_count":1,"exercise_templates":[{"id":"A","title":"Squat"},{"id":"B","title":"Front Squat"}]}`)
+
+	text := resultText(t, u.callTool("hevy_search_exercise_templates", map[string]any{"query": "squat", "limit": 1}))
+	assert.Less(t, strings.Index(text, `"total"`), strings.Index(text, `"exercise_templates"`))
+	assert.Less(t, strings.Index(text, `"note"`), strings.Index(text, `"exercise_templates"`))
+}
+
+// muscle_group is an exact match, so a guessed near-miss ("quads") silently
+// returns nothing. Publishing the enum lets the model pick a valid value.
+func TestTools_SearchExerciseTemplates_SchemaEnumeratesMuscleGroups(t *testing.T) {
+	u := newUpstream(t)
+	schema := toolSchema(t, u, "hevy_search_exercise_templates")
+	mg, ok := schema["inputSchema"].(map[string]any)["properties"].(map[string]any)["muscle_group"].(map[string]any)
+	require.True(t, ok, "muscle_group not published: %v", schema)
+	enum, ok := mg["enum"].([]any)
+	require.True(t, ok, "muscle_group must carry an enum: %v", mg)
+	assert.Len(t, enum, len(hevy.MuscleGroups))
+	assert.Contains(t, enum, "quadriceps")
+	assert.Contains(t, enum, "upper_back")
+}
+
+// The enum is advisory (mcp-go doesn't validate it), so an off-list value
+// still runs — but an empty result must say why instead of reading as
+// "no such exercise".
+func TestTools_SearchExerciseTemplates_UnknownMuscleGroupExplainsEmptyResult(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(200, `{"page":1,"page_count":1,"exercise_templates":[{"id":"A","title":"Squat","primary_muscle_group":"quadriceps"}]}`)
+
+	var got searchResult
+	require.NoError(t, json.Unmarshal([]byte(resultText(t, u.callTool("hevy_search_exercise_templates",
+		map[string]any{"muscle_group": "quads"}))), &got))
+	assert.Equal(t, 0, got.Total)
+	assert.Contains(t, got.Note, `"quads" is not a Hevy muscle group`)
+	assert.Contains(t, got.Note, "quadriceps")
+
+	// A valid group with no matches gets no such note.
+	got = searchResult{}
+	require.NoError(t, json.Unmarshal([]byte(resultText(t, u.callTool("hevy_search_exercise_templates",
+		map[string]any{"muscle_group": "Neck"}))), &got))
+	assert.Equal(t, 0, got.Total)
+	assert.Empty(t, got.Note)
 }
 
 func TestTools_SearchExerciseTemplates_HevyErrorIsToolError(t *testing.T) {

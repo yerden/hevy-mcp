@@ -1,11 +1,12 @@
 // Package exercises searches Hevy's exercise-template catalog by title
 // substring, muscle group, or exercise type.
 //
-// There is no local snapshot: each search pages through GET
+// There is no local snapshot: each search pages through the whole of GET
 // /v1/exercise_templates at that endpoint's 100-per-page ceiling and filters
-// on the fly, stopping as soon as Limit matches are found. Results therefore
-// always reflect the live catalog, and include the caller's own custom
-// exercises alongside the built-in ones.
+// on the fly. Scanning to the end (rather than stopping at the first N hits)
+// lets callers report a true total, which is what nudges a model to page
+// through the rest. Results always reflect the live catalog, and include the
+// caller's own custom exercises alongside the built-in ones.
 package exercises
 
 import (
@@ -30,38 +31,29 @@ type Lister interface {
 }
 
 // SearchParams filters the catalog. All filters are optional and combine with
-// AND semantics; if none are set, the first Limit entries are returned.
+// AND semantics; if none are set, the whole catalog matches.
 type SearchParams struct {
 	Query                  string // substring match on title, case-insensitive
 	MuscleGroup            string // matches primary OR secondary muscle group (exact, case-insensitive)
 	MuscleGroupPrimaryOnly bool   // when true, MuscleGroup only matches the primary muscle group
 	ExerciseType           string // exact match on template type (case-insensitive)
-	Limit                  int    // cap on returned entries; 0 or negative = no cap
 }
 
-// Result is what Search found.
-type Result struct {
-	Templates []hevy.ExerciseTemplate
-	// Truncated reports that the scan stopped at Limit before reaching the
-	// end of the catalog, so more matches may exist.
-	Truncated bool
-}
-
-// Search pages through the catalog via l and returns entries matching every
-// non-empty filter, up to Limit, in Hevy's listing order. Any page error
-// aborts the search — a partial result would look like "no such exercise".
-func Search(l Lister, p SearchParams) (Result, error) {
+// Search pages through the catalog via l and returns every entry matching all
+// non-empty filters, in Hevy's listing order. Any page error aborts the
+// search — a partial result would look like "no such exercise".
+func Search(l Lister, p SearchParams) ([]hevy.ExerciseTemplate, error) {
 	q := strings.ToLower(strings.TrimSpace(p.Query))
 	mg := strings.ToLower(strings.TrimSpace(p.MuscleGroup))
 	et := strings.ToLower(strings.TrimSpace(p.ExerciseType))
 
-	res := Result{Templates: make([]hevy.ExerciseTemplate, 0, 32)}
+	out := make([]hevy.ExerciseTemplate, 0, 32)
 	for page := 1; page <= maxPages; page++ {
 		resp, err := l.ListExerciseTemplates(page, pageSize)
 		if err != nil {
-			return Result{}, err
+			return nil, err
 		}
-		for i, t := range resp.ExerciseTemplates {
+		for _, t := range resp.ExerciseTemplates {
 			if q != "" && !strings.Contains(strings.ToLower(t.Title), q) {
 				continue
 			}
@@ -75,17 +67,13 @@ func Search(l Lister, p SearchParams) (Result, error) {
 			// reading search results. `equipment` is kept: it disambiguates
 			// "Bench Press (Barbell)" vs the machine variant.
 			t.ThumbnailURL = ""
-			res.Templates = append(res.Templates, t)
-			if p.Limit > 0 && len(res.Templates) >= p.Limit {
-				res.Truncated = i < len(resp.ExerciseTemplates)-1 || page < resp.PageCount
-				return res, nil
-			}
+			out = append(out, t)
 		}
 		if page >= resp.PageCount || len(resp.ExerciseTemplates) == 0 {
 			break
 		}
 	}
-	return res, nil
+	return out, nil
 }
 
 func matchMuscleGroup(t hevy.ExerciseTemplate, mg string, primaryOnly bool) bool {

@@ -27,6 +27,16 @@ type EquipmentCategory string
 // MuscleGroup is a primary or secondary muscle category for an exercise.
 type MuscleGroup string
 
+// MuscleGroups is the spec's `MuscleGroup` enum, in spec order (copied
+// 2026-10-28). Published as the search tool's muscle_group enum so the model
+// can't guess a near-miss like "quads" and get a silent empty result.
+var MuscleGroups = []string{
+	"abdominals", "shoulders", "biceps", "triceps", "forearms",
+	"quadriceps", "hamstrings", "calves", "glutes", "abductors",
+	"adductors", "lats", "upper_back", "traps", "lower_back",
+	"chest", "cardio", "neck", "full_body", "other",
+}
+
 // -- Response types --------------------------------------------------------
 
 // WorkoutSet is one logged set inside a workout exercise (response shape).

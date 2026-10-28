@@ -59,13 +59,13 @@ func fixture() []hevy.ExerciseTemplate {
 
 func search(t *testing.T, entries []hevy.ExerciseTemplate, p SearchParams) []hevy.ExerciseTemplate {
 	t.Helper()
-	res, err := Search(&fakeLister{entries: entries, per: 2}, p)
+	got, err := Search(&fakeLister{entries: entries, per: 2}, p)
 	require.NoError(t, err)
-	return res.Templates
+	return got
 }
 
 func TestSearch_QueryMatchesTitleSubstringCaseInsensitive(t *testing.T) {
-	got := search(t, fixture(), SearchParams{Query: "squat", Limit: 10})
+	got := search(t, fixture(), SearchParams{Query: "squat"})
 	require.Len(t, got, 2)
 	for _, e := range got {
 		assert.Contains(t, strings.ToLower(e.Title), "squat")
@@ -73,7 +73,7 @@ func TestSearch_QueryMatchesTitleSubstringCaseInsensitive(t *testing.T) {
 }
 
 func TestSearch_MuscleGroupMatchesPrimaryOrSecondary(t *testing.T) {
-	got := search(t, fixture(), SearchParams{MuscleGroup: "glutes", Limit: 10})
+	got := search(t, fixture(), SearchParams{MuscleGroup: "glutes"})
 	// Back Squat (secondary) and Bulgarian Split Squat (secondary)
 	require.Len(t, got, 2)
 	for _, e := range got {
@@ -90,8 +90,8 @@ func TestSearch_MuscleGroupPrimaryOnly(t *testing.T) {
 		SecondaryMuscleGroups: []hevy.MuscleGroup{"biceps"},
 	})
 
-	full := search(t, entries, SearchParams{MuscleGroup: "biceps", Limit: 50})
-	primary := search(t, entries, SearchParams{MuscleGroup: "biceps", MuscleGroupPrimaryOnly: true, Limit: 50})
+	full := search(t, entries, SearchParams{MuscleGroup: "biceps"})
+	primary := search(t, entries, SearchParams{MuscleGroup: "biceps", MuscleGroupPrimaryOnly: true})
 
 	require.Len(t, full, 3)
 	require.Len(t, primary, 2)
@@ -103,7 +103,7 @@ func TestSearch_MuscleGroupPrimaryOnly(t *testing.T) {
 }
 
 func TestSearch_FiltersCombineWithAnd(t *testing.T) {
-	got := search(t, fixture(), SearchParams{Query: "curl", MuscleGroup: "biceps", Limit: 10})
+	got := search(t, fixture(), SearchParams{Query: "curl", MuscleGroup: "biceps"})
 	require.Len(t, got, 2)
 	for _, e := range got {
 		assert.Contains(t, strings.ToLower(e.Title), "curl")
@@ -111,18 +111,18 @@ func TestSearch_FiltersCombineWithAnd(t *testing.T) {
 }
 
 func TestSearch_UnknownMuscleGroupReturnsEmpty(t *testing.T) {
-	got := search(t, fixture(), SearchParams{MuscleGroup: "no_such_muscle", Limit: 10})
+	got := search(t, fixture(), SearchParams{MuscleGroup: "no_such_muscle"})
 	assert.Empty(t, got)
 }
 
 func TestSearch_ExerciseTypeFilter(t *testing.T) {
-	got := search(t, fixture(), SearchParams{ExerciseType: "distance_duration", Limit: 10})
+	got := search(t, fixture(), SearchParams{ExerciseType: "distance_duration"})
 	require.Len(t, got, 1)
 	assert.Equal(t, "Rowing Machine", got[0].Title)
 }
 
 func TestSearch_EmptyCatalogReturnsEmpty(t *testing.T) {
-	got := search(t, nil, SearchParams{Query: "anything", Limit: 10})
+	got := search(t, nil, SearchParams{Query: "anything"})
 	assert.NotNil(t, got, "an empty result must marshal as [], not null")
 	assert.Empty(t, got)
 }
@@ -135,32 +135,14 @@ func TestSearch_RequestsMaxPageSize(t *testing.T) {
 	assert.Equal(t, []int{100}, f.sizes)
 }
 
-// Every page is scanned when matches are spread across them, and the walk
-// ends at page_count rather than probing past it.
+// The whole catalog is scanned so the caller can report a true total, and the
+// walk ends at page_count rather than probing past it.
 func TestSearch_WalksAllPagesUpToPageCount(t *testing.T) {
 	f := &fakeLister{entries: fixture(), per: 2}
-	res, err := Search(f, SearchParams{MuscleGroup: "biceps", Limit: 10})
+	got, err := Search(f, SearchParams{MuscleGroup: "biceps"})
 	require.NoError(t, err)
 	assert.Equal(t, []int{1, 2, 3}, f.calls)
-	require.Len(t, res.Templates, 2)
-	assert.False(t, res.Truncated)
-}
-
-func TestSearch_StopsPagingOnceLimitIsReached(t *testing.T) {
-	f := &fakeLister{entries: fixture(), per: 2}
-	res, err := Search(f, SearchParams{Limit: 3})
-	require.NoError(t, err)
-	assert.Len(t, res.Templates, 3)
-	assert.Equal(t, []int{1, 2}, f.calls, "page 3 must not be fetched once the limit is met")
-	assert.True(t, res.Truncated)
-}
-
-// Hitting the limit on the very last row means nothing was left unscanned.
-func TestSearch_LimitOnLastEntryIsNotTruncated(t *testing.T) {
-	res, err := Search(&fakeLister{entries: fixture(), per: 2}, SearchParams{Limit: 5})
-	require.NoError(t, err)
-	assert.Len(t, res.Templates, 5)
-	assert.False(t, res.Truncated)
+	require.Len(t, got, 2)
 }
 
 func TestSearch_PageCountIsCappedAtMaxPages(t *testing.T) {
@@ -182,9 +164,9 @@ func TestSearch_EmptyPageEndsWalk(t *testing.T) {
 
 func TestSearch_PageErrorAbortsSearch(t *testing.T) {
 	f := &fakeLister{entries: fixture(), per: 2, failPage: 2}
-	res, err := Search(f, SearchParams{Query: "squat"})
+	got, err := Search(f, SearchParams{Query: "squat"})
 	require.Error(t, err)
-	assert.Empty(t, res.Templates, "a partial result must not be returned")
+	assert.Empty(t, got, "a partial result must not be returned")
 }
 
 func TestSearch_DropsThumbnailURL(t *testing.T) {
