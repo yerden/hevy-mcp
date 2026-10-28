@@ -31,7 +31,7 @@ func RegisterAll(s *server.MCPServer, factory ClientFactory) {
 	registerWorkouts(s, factory)
 	registerRoutines(s, factory)
 	registerExerciseTemplates(s, factory)
-	registerExerciseSearch(s)
+	registerExerciseSearch(s, factory)
 	registerRoutineFolders(s, factory)
 	registerExerciseHistory(s, factory)
 	registerBodyMeasurements(s, factory)
@@ -128,13 +128,6 @@ var (
 		DestructiveHint: mcp.ToBoolPtr(false),
 		IdempotentHint:  mcp.ToBoolPtr(true),
 		OpenWorldHint:   mcp.ToBoolPtr(true),
-	})
-	// readsCatalog: a lookup in the embedded catalog; no network at all.
-	readsCatalog = mcp.WithToolAnnotation(mcp.ToolAnnotation{
-		ReadOnlyHint:    mcp.ToBoolPtr(true),
-		DestructiveHint: mcp.ToBoolPtr(false),
-		IdempotentHint:  mcp.ToBoolPtr(true),
-		OpenWorldHint:   mcp.ToBoolPtr(false),
 	})
 	// createsInHevy: a POST. Additive, but each call makes another object,
 	// and Hevy has no DELETE endpoints to undo it.
@@ -329,20 +322,14 @@ func registerExerciseTemplates(s *server.MCPServer, factory ClientFactory) {
 		}))
 }
 
-// registerExerciseSearch adds a local-only search tool over the embedded
-// public exercise-template catalog. No Hevy round-trip is made — the catalog
-// is refreshed by running `go generate ./internal/exercises/...`.
-//
-// The tool is a no-op when the catalog is empty (build without the generated
-// snapshot, or a fresh checkout), so we skip registration entirely rather
-// than expose a schema that always returns zero results.
-func registerExerciseSearch(s *server.MCPServer) {
-	if len(exercises.Catalog) == 0 {
-		return
-	}
+// registerExerciseSearch adds a search tool over Hevy's exercise-template
+// catalog. Each call pages through /v1/exercise_templates (100 per page, ~5
+// requests for the full catalog) and filters server-side, so only the matches
+// reach the model's context.
+func registerExerciseSearch(s *server.MCPServer, factory ClientFactory) {
 	s.AddTool(mcp.NewTool("hevy_search_exercise_templates",
-		mcp.WithDescription("Search the built-in Hevy exercise-template catalog (public exercises only, no round-trip). Filter by title substring, muscle group, or exercise type. Custom user-created exercises are not indexed — use hevy_list_exercise_templates for those."),
-		readsCatalog,
+		mcp.WithDescription("Search Hevy exercise templates — built-in and the user's custom ones — by title substring, muscle group, or exercise type. Filtering happens server-side, so prefer this over paging hevy_list_exercise_templates to find an exercise. `truncated: true` means the limit was hit and more matches may exist."),
+		readsHevy,
 		mcp.WithString("query",
 			mcp.Description("Case-insensitive substring match on exercise title (e.g. 'squat', 'pendlay').")),
 		mcp.WithString("muscle_group",
@@ -360,19 +347,23 @@ func registerExerciseSearch(s *server.MCPServer) {
 			mcp.Max(200),
 		),
 	),
-		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			results := exercises.Search(exercises.SearchParams{
+		wrap(factory, func(c *hevy.Client, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			res, err := exercises.Search(c, exercises.SearchParams{
 				Query:                  req.GetString("query", ""),
 				MuscleGroup:            req.GetString("muscle_group", ""),
 				MuscleGroupPrimaryOnly: req.GetBool("muscle_group_primary_only", false),
 				ExerciseType:           req.GetString("exercise_type", ""),
 				Limit:                  req.GetInt("limit", 20),
 			})
+			if err != nil {
+				return mcp.NewToolResultError(err.Error()), nil
+			}
 			return jsonResult(map[string]any{
-				"count":              len(results),
-				"exercise_templates": results,
+				"count":              len(res.Templates),
+				"truncated":          res.Truncated,
+				"exercise_templates": res.Templates,
 			})
-		})
+		}))
 }
 
 func registerRoutineFolders(s *server.MCPServer, factory ClientFactory) {

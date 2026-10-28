@@ -89,13 +89,12 @@ Rejections are still atomic — a 400 means no partial write.
 
 Both are output-only and absent from the create shape (which spells equipment
 `equipment_category`). Added to `ExerciseTemplate` 2026-10-19 after a spec
-re-check; before that they were silently dropped from every template read *and*
-from the embedded catalog, which is typed as `[]hevy.ExerciseTemplate`.
+re-check; before that they were silently dropped from every template read.
 
-The catalog generator (`internal/exercises/gen`) deliberately blanks
-`ThumbnailURL` before writing `catalog.json`: the URLs are ~110 chars of S3 path
-that no model needs in search results. `Equipment` is kept — it disambiguates
-titles like "Bench Press (Barbell)" vs the machine variant.
+`exercises.Search` deliberately blanks `ThumbnailURL` on its matches: the URLs
+are ~110 chars of S3 path that no model needs in search results. `Equipment` is
+kept — it disambiguates titles like "Bench Press (Barbell)" vs the machine
+variant.
 
 ### Exercise `type` on reads is a superset of the create enum
 
@@ -139,9 +138,10 @@ The spec says integer; real catalog uses hex strings like `"05293BCA"`. `flexibl
 
 - Tool definitions use **`mcp.WithInputSchema[T]()`** for create/update tools — it reflects on a Go struct (request type) and emits a precise JSON schema. The model needs this to populate fields like `folder_id` it would otherwise have to guess.
 - Simple read tools use explicit `mcp.WithString`/`mcp.WithNumber` etc. — keep them flat; no need to reach for typed schema for one-field tools.
-- **Every tool carries an annotation option** (`readsHevy`, `readsCatalog`, `createsInHevy`, `overwritesInHevy` in `register.go`). `mcp.NewTool` defaults to `readOnlyHint=false, destructiveHint=true`, and claude.ai files any tool with those defaults under "Write/Delete tools", reads included. Pinned by `TestTools_AnnotationsMatchToolKind`, which fails for any new tool name it doesn't recognise.
+- **Every tool carries an annotation option** (`readsHevy`, `createsInHevy`, `overwritesInHevy` in `register.go`). `mcp.NewTool` defaults to `readOnlyHint=false, destructiveHint=true`, and claude.ai files any tool with those defaults under "Write/Delete tools", reads included. Pinned by `TestTools_AnnotationsMatchToolKind`, which fails for any new tool name it doesn't recognise.
 - Tool **error semantics**: API errors are surfaced as `mcp.NewToolResultError(...)` (tool result with `IsError=true`), not as transport-level errors. The model can read the message and try again. Reserve transport errors for genuinely broken requests.
 - Pagination: every list tool exposes `page` (default 1) and `pageSize` (default 10). The max is 10 — Hevy's limit — **except `/v1/exercise_templates`, which allows 100** (spec default *is* 100; live-verified 2026-10-19). `paginationOpts()` emits the 10 ceiling, `paginationOptsMax(100)` the templates one; the default stays 10 everywhere so a list call can't dump a huge page into context unasked. The model controls paging so Hevy traffic stays bounded; never auto-walk all pages.
+- **The one auto-walk: `hevy_search_exercise_templates`.** It pages `/v1/exercise_templates` at 100 per page (~5 requests for the ~460-entry catalog), filters server-side, and returns only matches. It stops as soon as `limit` matches are found and is hard-capped at `maxPages` (20) whatever `page_count` says. Any page error fails the whole search — a partial result would read as "no such exercise". This replaced an embedded build-time catalog snapshot (2026-10-28); there is no `go generate` step or `hevy_key` build secret any more.
 
 ## Authentication
 
@@ -173,11 +173,11 @@ Two distinct auth paths, one per transport. There is no `X-Hevy-Api-Key` header 
 The workflow lives at `.github/workflows/fly-deploy.yml`. Two jobs:
 
 - **`test`** runs on every push to `main` (and on manual dispatch). Executes `docker compose run --rm test` — same command CLAUDE.md's testing rule specifies. If you change the test invocation, keep the workflow and `docker-compose.yml` `test` service in sync.
-- **`deploy`** is `workflow_dispatch`-gated (`if: github.event_name == 'workflow_dispatch'`). Push does not ship — you must click Run workflow. It `needs: test`, verifies `FLY_API_TOKEN` and `HEVY_API_KEY` secrets are set (fails fast if not), then runs `flyctl deploy --remote-only --build-secret hevy_key="$HEVY_API_KEY"`.
+- **`deploy`** is `workflow_dispatch`-gated (`if: github.event_name == 'workflow_dispatch'`). Push does not ship — you must click Run workflow. It `needs: test`, verifies the `FLY_API_TOKEN` secret is set (fails fast if not), then runs `flyctl deploy --remote-only`.
 
 Things to remember when touching build/deploy code:
 
-- **BuildKit secrets are wired end-to-end.** The Dockerfile mounts `--mount=type=secret,id=hevy_key` to populate the embedded exercise catalog via `go generate`. The workflow passes `--build-secret hevy_key="$HEVY_API_KEY"`. If you add another build secret, wire all three sites (Dockerfile mount, workflow flag, GitHub Actions secret) or the build will silently use empty input.
+- **The build takes no secrets.** If you ever add a BuildKit secret, wire all three sites (Dockerfile `--mount=type=secret`, workflow `--build-secret` flag, GitHub Actions secret) or the build will silently use empty input.
 - **Runtime env vars are separate from build secrets.** Public values (like `OAUTH_ALLOWED_REDIRECT_URIS`) go in `fly.toml`'s `[env]`. Private values (`OAUTH_SIGNING_KEY`, `OAUTH_ENCRYPTION_KEY`) are set via `flyctl secrets set` and are *not* touched by the workflow. Adding a new required runtime secret means updating this list and telling the operator to run `flyctl secrets set` — the workflow won't do it for them.
 - **`setup-flyctl` is pinned to a specific tag** (`@1.5`), not `@master` or `@v1`. Bump deliberately, not accidentally.
 - **Deploys don't auto-fire.** Any advice about "just push and it'll deploy" is wrong here — the user chose manual gating on purpose. Suggest the Actions UI or `gh workflow run fly-deploy.yml` for deploys, not a git push.

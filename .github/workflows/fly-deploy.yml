@@ -23,13 +23,10 @@ jobs:
       - name: Verify required secrets
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}
         run: |
           : "${FLY_API_TOKEN:?FLY_API_TOKEN secret is not set}"
-          : "${HEVY_API_KEY:?HEVY_API_KEY secret is not set}"
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@1.5
-      - run: flyctl deploy --remote-only --build-secret hevy_key="$HEVY_API_KEY"
+      - run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}

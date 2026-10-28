@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/yerden/hevy-mcp/internal/exercises"
 	"github.com/yerden/hevy-mcp/internal/hevy"
 )
 
@@ -51,16 +50,6 @@ func newUpstream(t *testing.T) *upstream {
 	u.server = server.NewMCPServer("hevy-mcp-test", "0.0.0", server.WithToolCapabilities(true))
 	RegisterAll(u.server, StaticFactory(hc))
 	return u
-}
-
-// seedCatalog installs a temporary exercise catalog for the duration of the
-// test. Callers must invoke it before newUpstream, because registerExerciseSearch
-// consults the catalog at registration time and skips itself when empty.
-func seedCatalog(t *testing.T, entries []hevy.ExerciseTemplate) {
-	t.Helper()
-	prev := exercises.Catalog
-	exercises.Catalog = entries
-	t.Cleanup(func() { exercises.Catalog = prev })
 }
 
 // reply sets the next upstream response.
@@ -496,57 +485,51 @@ func TestTools_GetExerciseTemplate(t *testing.T) {
 	assert.Equal(t, "/v1/exercise_templates/e1", u.lastReq.URL.Path)
 }
 
-func TestTools_SearchExerciseTemplates_UsesEmbeddedCatalogNoRoundTrip(t *testing.T) {
-	// Seed the catalog BEFORE newUpstream — registerExerciseSearch skips
-	// registration when the catalog is empty (the repo's stub state).
-	seedCatalog(t, []hevy.ExerciseTemplate{
-		{ID: "AAA", Title: "Back Squat (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
-		{ID: "BBB", Title: "Front Squat (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
-		{ID: "CCC", Title: "Bench Press (Barbell)", Type: "weight_reps", PrimaryMuscleGroup: "chest"},
-	})
+// The search walks the live catalog at Hevy's 100-per-page ceiling and filters
+// server-side; only matches (custom ones included) reach the result.
+func TestTools_SearchExerciseTemplates_PagesLiveCatalogAndFilters(t *testing.T) {
 	u := newUpstream(t)
-
-	r := u.callTool("hevy_search_exercise_templates", map[string]any{"query": "squat"})
-	assert.False(t, r.IsError)
-	assert.Nil(t, u.lastReq, "search must be local; no upstream request expected")
-
-	text := resultText(t, r)
-	assert.Contains(t, text, `"count":2`)
-	assert.Contains(t, text, "Back Squat")
-	assert.Contains(t, text, "Front Squat")
-	assert.NotContains(t, text, "Bench Press")
-}
-
-// Empty catalog → tool must not be advertised at all. Otherwise the model sees
-// a search tool that always returns zero results, wasting schema tokens.
-func TestTools_SearchExerciseTemplates_SkippedWhenCatalogEmpty(t *testing.T) {
-	// Explicitly set an empty catalog (defensive — the embedded stub is
-	// already empty in tests, but this guards against a future change).
-	seedCatalog(t, nil)
-	u := newUpstream(t)
-
-	msg, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/list",
-	})
-	resp := u.server.HandleMessage(context.Background(), msg)
-	jr, ok := resp.(mcp.JSONRPCResponse)
-	require.True(t, ok)
-	var listResult mcp.ListToolsResult
-	switch v := jr.Result.(type) {
-	case *mcp.ListToolsResult:
-		listResult = *v
-	case mcp.ListToolsResult:
-		listResult = v
-	default:
-		t.Fatalf("expected ListToolsResult, got %T", jr.Result)
-	}
-	for _, tool := range listResult.Tools {
-		if tool.Name == "hevy_search_exercise_templates" {
-			t.Fatalf("expected hevy_search_exercise_templates to be absent when catalog is empty")
+	var pages []string
+	u.handler = func(w http.ResponseWriter, r *http.Request) {
+		pages = append(pages, r.URL.Query().Get("page"))
+		assert.Equal(t, "/v1/exercise_templates", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("pageSize"))
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`{"page":1,"page_count":2,"exercise_templates":[
+				{"id":"AAA","title":"Back Squat (Barbell)","type":"weight_reps","primary_muscle_group":"quadriceps","thumbnail_url":"https://s3/a.jpg"},
+				{"id":"CCC","title":"Bench Press (Barbell)","type":"weight_reps","primary_muscle_group":"chest"}]}`))
+		default:
+			_, _ = w.Write([]byte(`{"page":2,"page_count":2,"exercise_templates":[
+				{"id":"c-1","title":"My Goblet Squat","type":"weight_reps","primary_muscle_group":"quadriceps","is_custom":true}]}`))
 		}
 	}
+
+	r := u.callTool("hevy_search_exercise_templates", map[string]any{"query": "squat"})
+	require.False(t, r.IsError, resultText(t, r))
+	assert.Equal(t, []string{"1", "2"}, pages)
+
+	var got struct {
+		Count             int                     `json:"count"`
+		Truncated         bool                    `json:"truncated"`
+		ExerciseTemplates []hevy.ExerciseTemplate `json:"exercise_templates"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(resultText(t, r)), &got))
+	assert.Equal(t, 2, got.Count)
+	assert.False(t, got.Truncated)
+	require.Len(t, got.ExerciseTemplates, 2)
+	assert.Equal(t, "AAA", got.ExerciseTemplates[0].ID)
+	assert.Empty(t, got.ExerciseTemplates[0].ThumbnailURL, "thumbnails are stripped from search results")
+	assert.Equal(t, "c-1", got.ExerciseTemplates[1].ID)
+	assert.True(t, got.ExerciseTemplates[1].IsCustom)
+}
+
+func TestTools_SearchExerciseTemplates_HevyErrorIsToolError(t *testing.T) {
+	u := newUpstream(t)
+	u.reply(429, `{"error":"rate limited"}`)
+
+	r := u.callTool("hevy_search_exercise_templates", map[string]any{"query": "squat"})
+	assert.True(t, r.IsError)
 }
 
 func TestTools_ListRoutineFolders(t *testing.T) {
@@ -684,11 +667,6 @@ func TestTools_CreateRoutine_SchemaAdvertisesFields(t *testing.T) {
 }
 
 func TestTools_AllRegistered(t *testing.T) {
-	// Seed the catalog so hevy_search_exercise_templates gets registered
-	// (see registerExerciseSearch).
-	seedCatalog(t, []hevy.ExerciseTemplate{
-		{ID: "AAA", Title: "Squat", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
-	})
 	u := newUpstream(t)
 	u.reply(200, `{"page":1,"page_count":1,"workouts":[]}`)
 
@@ -717,7 +695,7 @@ func TestTools_AllRegistered(t *testing.T) {
 		"hevy_update_body_measurement",
 		"hevy_get_user_info",
 	}
-	assert.Len(t, expected, 23, "22 Hevy endpoints + 1 local search tool over the embedded catalog")
+	assert.Len(t, expected, 23, "22 Hevy endpoints + 1 search tool filtering the template catalog")
 
 	// Issue tools/list to verify each tool is present.
 	msg, _ := json.Marshal(map[string]any{
@@ -1014,9 +992,6 @@ func TestTools_UpdateWorkout_SchemaWarnsAboutIsPrivate(t *testing.T) {
 // claude.ai list every tool — reads included — as "write/delete". Each tool
 // must state its kind explicitly.
 func TestTools_AnnotationsMatchToolKind(t *testing.T) {
-	seedCatalog(t, []hevy.ExerciseTemplate{
-		{ID: "AAA", Title: "Squat", Type: "weight_reps", PrimaryMuscleGroup: "quadriceps"},
-	})
 	u := newUpstream(t)
 
 	msg, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
